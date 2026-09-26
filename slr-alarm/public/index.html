@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SLR 장터 알림</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">SLR</span>
+    <div>
+      <h1>SLR 장터 알림 <span class="unread hidden" id="unread-badge"></span></h1>
+      <p>SLR클럽 회원장터 &gt; 팝니다에 내 키워드가 제목에 들어간 새 글이 올라오면 알려 주고, 바로 열 수 있는 링크를 보내 줍니다.</p>
+    </div>
+  </div>
+  <div class="pills">
+    <span class="pill" id="pill-watch">확인 중</span>
+    <span class="pill" id="pill-check">마지막 확인 —</span>
+    <span class="pill" id="pill-telegram">텔레그램 —</span>
+    <span class="pill" id="pill-notify">브라우저 알림 —</span>
+  </div>
+</header>
+
+<main>
+  <section class="card">
+    <div class="card-head">
+      <h2>1. 알림 받을 키워드</h2>
+      <span class="hint">저장해 두면 껐다 켜도 그대로 남습니다</span>
+    </div>
+    <div class="order-row">
+      <label class="order-topic">
+        <input id="kw-input" type="text" spellcheck="false" autocomplete="off"
+          placeholder="예) 소니 a7m5 · 라이카 q2 · a7c2|a7cr · 후지 x100 -배터리">
+      </label>
+      <button class="btn primary" id="btn-add">추가</button>
+    </div>
+    <p class="note tight">
+      대소문자·띄어쓰기는 무시합니다 (<b>a7m5</b> 로 넣으면 <b>A7M5</b>, <b>A7 M5</b> 모두 찾음).
+      <b>소니 a7m5</b> = 두 단어 모두 · <b>a7m5|a7v</b> = 둘 중 하나 · <b>라이카 -배터리</b> = '배터리'가 들어간 글은 빼기.
+      쉼표로 나누거나 여러 줄을 붙여넣으면 한 번에 여러 개가 들어갑니다. (Enter 키로도 추가)
+    </p>
+    <ul class="kw-list" id="kw-list"></ul>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>2. 알림 받은 글</h2>
+      <div class="row">
+        <button class="btn small" id="btn-read-all">모두 읽음</button>
+        <button class="btn small ghost danger" id="btn-clear-hits">목록 비우기</button>
+      </div>
+    </div>
+    <ul class="hit-list" id="hit-list"></ul>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>3. 지금 장터 목록</h2>
+      <div class="row">
+        <button class="btn small primary" id="btn-check">지금 확인</button>
+        <button class="btn small" id="btn-pause">일시정지</button>
+      </div>
+    </div>
+    <p class="status-line" id="status-line"></p>
+    <ul class="post-list" id="post-list"></ul>
+    <p class="note tight">키워드에 맞는 글은 초록색으로 표시됩니다. 여기 이미 있던 글은 알림을 보내지 않고, <b>이후에 새로 올라온 글</b>만 알려 드립니다.</p>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>4. 설정</h2>
+      <span class="hint">이 컴퓨터의 data/slr-alarm.json 에만 저장됩니다</span>
+    </div>
+
+    <h3>확인</h3>
+    <div class="grid">
+      <label>확인 간격 (초, 최소 30)
+        <input id="s-interval" type="number" min="30" step="10">
+      </label>
+      <label class="wide">감시할 게시판 목록 주소 <span class="sub">비우면 회원장터 &gt; 팝니다</span>
+        <input id="s-board" type="text" spellcheck="false">
+      </label>
+    </div>
+    <div class="row">
+      <button class="btn" id="btn-save-check">저장</button>
+    </div>
+
+    <h3>이 컴퓨터에서 알림</h3>
+    <div class="row">
+      <button class="btn" id="btn-notify">브라우저 알림 켜기</button>
+      <label class="check"><input type="checkbox" id="s-sound"> 알림 소리</label>
+      <button class="btn ghost" id="btn-test-sound">소리 들어보기</button>
+    </div>
+
+    <h3>휴대폰으로 알림 (텔레그램, 선택)</h3>
+    <div class="grid">
+      <label>봇 토큰 <span class="sub" id="token-hint">텔레그램 @BotFather → /newbot 으로 받은 토큰</span>
+        <input id="s-token" type="password" autocomplete="off" spellcheck="false" placeholder="123456:ABC-...">
+      </label>
+      <label>채팅 ID <span class="sub">휴대폰에서 봇에게 아무 말이나 보낸 뒤 [채팅 자동 찾기]</span>
+        <input id="s-chat" type="text" autocomplete="off" spellcheck="false">
+      </label>
+    </div>
+    <div class="row">
+      <button class="btn" id="btn-save-telegram">저장</button>
+      <button class="btn" id="btn-find-chat">채팅 자동 찾기</button>
+      <button class="btn" id="btn-test-telegram">테스트 보내기</button>
+    </div>
+
+    <h3>SLR클럽 로그인 (보통 필요 없음)</h3>
+    <div class="grid">
+      <label>아이디 <input id="s-slr-id" type="text" autocomplete="off" spellcheck="false"></label>
+      <label>비밀번호 <span class="sub" id="pw-hint"></span><input id="s-slr-pw" type="password" autocomplete="new-password"></label>
+    </div>
+    <div class="row">
+      <button class="btn" id="btn-save-slr">저장</button>
+    </div>
+    <p class="note">목록이 로그인해야 보일 때만 넣으세요. 목록을 못 읽으면 이 아이디로 로그인해서 다시 읽습니다.</p>
+  </section>
+</main>
+
+<div class="toast hidden" id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

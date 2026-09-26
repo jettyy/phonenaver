@@ -1,0 +1,18 @@
+{
+  "name": "slr-alarm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SLR클럽 중고장터(팝니다)에 내 키워드가 들어간 새 글이 올라오면 알려 주는 로컬 대시보드",
+  "main": "slr-alarm/server.js",
+  "scripts": {
+    "start": "node slr-alarm/server.js",
+    "check": "node slr-alarm/check.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "cheerio": "^1.2.0"
+  }
+}
