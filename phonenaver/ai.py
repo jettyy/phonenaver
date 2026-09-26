@@ -262,11 +262,21 @@ class Writer:
         for i, page in enumerate(pages, 1):
             if page.ok:
                 note = " (길어서 앞부분만)" if page.truncated else ""
+                kind = " (유튜브 영상)" if page.kind == "youtube" else ""
                 parts.append(
-                    f"[참고 링크 {i}{note}] {page.title}\nURL: {page.url}\n---\n{page.text}\n---"
+                    f"[참고 링크 {i}{kind}{note}] {page.title}\nURL: {page.url}\n---\n{page.text}\n---"
                 )
             else:
                 parts.append(f"[참고 링크 {i}] {page.url} - 읽지 못함: {page.error}")
+        if any(p.ok and p.kind == "youtube" for p in pages):
+            parts.append(
+                "[유튜브 영상 처리 규칙] 유튜브 참고 링크의 '영상 대사' 는 말로 한 내용을 받아 적은 자막입니다.\n"
+                "- 영상 전체 대사를 처음부터 끝까지 분석해서, 영상이 전하는 핵심 정보·주장·수치·팁·순서를 빠짐없이 뽑으세요.\n"
+                "- 구어체·반복·추임새는 정리하고, 블로그 글 구성(도입·소제목·요약)으로 새로 쓰세요. 자막 문장을 길게 그대로 옮기지 마세요.\n"
+                "- 자동 생성 자막은 오타·잘못 들은 단어가 있으니 문맥으로 바로잡고, 확실하지 않은 고유명사·수치는 단정하지 마세요.\n"
+                "- 영상을 참고했다는 것은 도입부나 마무리에 채널 이름 정도로 한 번 밝혀도 됩니다.\n"
+                "- 자막을 가져오지 못한 영상은 제목·설명에 있는 정보만 쓰고, 영상 내용을 지어내지 마세요."
+            )
         if insert_urls:
             links = "\n".join(f"- {u}" for u in insert_urls)
             parts.append(

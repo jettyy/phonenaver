@@ -9,3 +9,4 @@ tzdata; sys_platform == "win32"
 pillow>=10
 lxml_html_clean>=0.4
 aiohttp>=3.9
+youtube-transcript-api>=1.2

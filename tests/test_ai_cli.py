@@ -147,3 +147,12 @@ def test_model_is_always_sonnet(writer, monkeypatch):
     for call in _calls(writer):
         args = call["args"]
         assert args[args.index("--model") + 1] == "sonnet"
+
+
+def test_youtube_rules_in_prompt(writer):
+    from phonenaver.fetcher import Page
+
+    page = Page(url="https://youtu.be/AbCdEfGhIjK", title="영상", text="영상 대사: 끝까지표시", kind="youtube")
+    writer.write("이 영상으로 글 써줘", None, [page], [])
+    prompt = _calls(writer)[0]["prompt"]
+    assert "[유튜브 영상 처리 규칙]" in prompt and "(유튜브 영상)" in prompt and "끝까지표시" in prompt

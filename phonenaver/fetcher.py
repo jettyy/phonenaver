@@ -24,6 +24,8 @@ class Page:
     text: str = ""
     error: str = ""
     truncated: bool = False
+    kind: str = "web"  # "web" | "youtube"
+    warning: str = ""
 
     @property
     def ok(self) -> bool:
@@ -71,7 +73,42 @@ def extract(html: str, url: str = "") -> tuple[str, str]:
     return title, text.strip()
 
 
+YOUTUBE_MAX_CHARS = 60000  # 긴 영상 자막도 최대한 전부
+
+
+def fetch_youtube(url: str) -> Page:
+    """유튜브: 영상 제목·채널·설명과 자막(대사) 전체."""
+    from .youtube import fetch_video
+
+    video = fetch_video(url)
+    page = Page(url=url, final_url=f"https://www.youtube.com/watch?v={video.id}", title=video.title, kind="youtube")
+    head = [f"[유튜브 영상] {video.title}".strip()]
+    if video.channel:
+        head.append(f"채널: {video.channel}")
+    if video.description:
+        head.append(f"영상 설명:\n{video.description}")
+    if video.transcript:
+        auto = " (자동 생성 자막이라 틀린 글자가 있을 수 있음)" if video.auto_generated else ""
+        body = video.transcript
+        if len(body) > YOUTUBE_MAX_CHARS:
+            body, page.truncated = body[:YOUTUBE_MAX_CHARS], True
+        head.append(f"영상 대사(자막, 언어 {video.language}){auto}:\n{body}")
+        page.text = "\n\n".join(head)
+    elif video.title or video.description:
+        # 자막이 없으면 제목·설명만이라도 (오류 문구는 경고로 남긴다)
+        page.text = "\n\n".join(head + [f"(대사를 가져오지 못함: {video.error})"])
+        page.error = ""
+        page.warning = f"유튜브 자막 없음 — {video.error}. 제목·설명만으로 썼습니다"
+    else:
+        page.error = video.error or "유튜브 영상 정보를 가져오지 못했습니다"
+    return page
+
+
 def fetch(url: str, timeout: float = 20.0) -> Page:
+    from .youtube import is_youtube
+
+    if is_youtube(url):
+        return fetch_youtube(url)
     page = Page(url=url)
     target = normalize_url(url)
     try:

@@ -105,11 +105,19 @@ class Pipeline:
 
         pages: list[Page] = []
         if cmd.urls:
-            await progress(f"🔗 링크 {len(cmd.urls)}개 읽는 중...")
+            from .youtube import is_youtube
+
+            n_yt = sum(1 for u in cmd.urls if is_youtube(u))
+            what = f"유튜브 {n_yt}개 대사(자막)" if n_yt == len(cmd.urls) else f"링크 {len(cmd.urls)}개"
+            await progress(f"{'🎬' if n_yt else '🔗'} {what} 읽는 중...")
             pages = list(await asyncio.gather(*(asyncio.to_thread(fetch, u) for u in cmd.urls)))
             failed = [p for p in pages if not p.ok]
             if failed:
-                await progress("⚠️ 읽지 못한 링크: " + ", ".join(p.url for p in failed))
+                await progress("⚠️ 읽지 못한 링크: " + ", ".join(f"{p.url} ({p.error})" for p in failed))
+            warnings += [p.warning for p in pages if p.warning]
+            for p in pages:
+                if p.ok and p.kind == "youtube":
+                    await progress(f"🎬 '{p.title[:40]}' 대사 {len(p.text):,}자 읽음 — 분석해서 글 작성")
 
         cats = await self._categories(cmd, warnings)
 
