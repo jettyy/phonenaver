@@ -57,7 +57,12 @@ def build_app(cfg: Config) -> Application:
     pipeline = Pipeline(cfg)
     upload_dir = cfg.image_dir / "uploads"
     app = Application.builder().token(cfg.telegram_bot_token).build()
-    job_lock = asyncio.Lock()  # 글은 한 번에 하나씩 처리
+    locks: dict = {}  # 글은 한 번에 하나씩 처리 (Lock 은 봇 루프 안에서 처음 쓸 때 생성 - 파이썬 3.9 호환)
+
+    def job_lock() -> asyncio.Lock:
+        if "job" not in locks:
+            locks["job"] = asyncio.Lock()
+        return locks["job"]
 
     def allowed(update: Update) -> bool:
         return bool(update.effective_chat) and update.effective_chat.id in cfg.allowed_chat_ids
@@ -103,7 +108,7 @@ def build_app(cfg: Config) -> Application:
             except Exception:
                 pass
 
-        async with job_lock:
+        async with job_lock():
             try:
                 result = await pipeline.run(text, progress, photos=photos)
             except NaverError as exc:
@@ -199,8 +204,9 @@ def build_app(cfg: Config) -> Application:
 
 
 def run_bot(cfg: Config) -> None:
-    app = build_app(cfg)
-    # 메뉴에서 봇을 껐다 다시 켤 수 있도록 매번 새 이벤트 루프 사용
+    # 메뉴에서 봇을 껐다 다시 켤 수 있도록 매번 새 이벤트 루프 사용.
+    # (파이썬 3.9 는 봇을 만들 때 루프가 있어야 하므로 build_app 보다 먼저)
     asyncio.set_event_loop(asyncio.new_event_loop())
+    app = build_app(cfg)
     log.info("텔레그램 봇 시작")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

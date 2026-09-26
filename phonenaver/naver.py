@@ -334,7 +334,16 @@ class NaverBlog:
         if not cfg.naver_blog_id:
             raise NaverError("NAVER_BLOG_ID 가 설정되지 않았습니다 (.env 확인)")
         self.cfg = cfg
-        self._lock = asyncio.Lock()  # 브라우저 프로필은 동시에 하나만 열 수 있음
+        # 브라우저 프로필은 동시에 하나만 열 수 있음. 파이썬 3.9 는 Lock 을 이벤트 루프 안에서
+        # 만들어야 해서, 실행 중인 루프마다 처음 쓸 때 만든다.
+        self._lock: asyncio.Lock | None = None
+        self._lock_loop = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock, self._lock_loop = asyncio.Lock(), loop
+        return self._lock
 
     # ── 카테고리 목록 ──
     @property
@@ -350,7 +359,7 @@ class NaverBlog:
             data = json.loads(cache.read_text(encoding="utf-8"))
             if time.time() - data.get("fetched", 0) < 86400 and data.get("items"):
                 return [Category(**c) for c in data["items"]]
-        async with self._lock:
+        async with self._get_lock():
             async with async_playwright() as pw:
                 ctx = await _open(pw, self.cfg, headless=True)
                 try:
@@ -407,7 +416,7 @@ class NaverBlog:
         images: list[Path] | None = None,
         category: Category | None = None,
     ) -> DraftResult:
-        async with self._lock:
+        async with self._get_lock():
             async with async_playwright() as pw:
                 ctx = await _open(pw, self.cfg, headless=self.cfg.headless)
                 page = ctx.pages[0] if ctx.pages else await ctx.new_page()
