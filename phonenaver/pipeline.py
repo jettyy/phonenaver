@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import html
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -145,6 +146,10 @@ class Pipeline:
         )
 
         body = html_utils.sanitize(post.body_html)
+        if any(p.ok and p.kind == "youtube" for p in pages):
+            mention = re.search(r"유튜브|유튜버|YouTube|영상에서|이 영상|채널에서", html_utils.html_to_text(body) + post.title, re.I)
+            if mention:
+                warnings.append(f"본문에 '{mention.group(0)}' 언급이 남아 있습니다 — 발행 전에 확인하세요")
         body = html_utils.append_links_section(body, cmd.insert_urls)  # 빠뜨린 링크 보정
         if image_count and per_section:
             # 사진 자리: 도입부 뒤 + 소제목 앞마다 (태그·출처보다 먼저 정해야 끝에 사진이 붙지 않음)

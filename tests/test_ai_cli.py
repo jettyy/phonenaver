@@ -156,3 +156,4 @@ def test_youtube_rules_in_prompt(writer):
     writer.write("이 영상으로 글 써줘", None, [page], [])
     prompt = _calls(writer)[0]["prompt"]
     assert "[유튜브 영상 처리 규칙]" in prompt and "(유튜브 영상)" in prompt and "끝까지표시" in prompt
+    assert "출처 언급은 하지 마세요" in prompt and "채널 이름 정도로 한 번 밝혀도" not in prompt
