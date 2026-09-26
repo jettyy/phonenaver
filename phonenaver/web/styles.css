@@ -389,3 +389,6 @@ td.src-cell { white-space: nowrap; }
 .cat-list span { padding: 3px 10px; border-radius: 999px; background: #eceff1; font-size: 12px; }
 .connect-msg { margin-top: 10px; padding: 10px 14px; border-radius: 9px; background: #fdf3e0; color: #92620a; font-weight: 600; }
 .big-hint { font-size: 13px; color: var(--muted); }
+.job-more { color: #14607f; font-weight: 600; font-size: 12px; }
+.job-request summary { cursor: pointer; color: #14607f; font-weight: 600; font-size: 12.5px; margin-bottom: 6px; }
+.job-request pre { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px; max-height: 260px; }

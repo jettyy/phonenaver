@@ -177,7 +177,9 @@ class JobRunner:
         self.start()
         assert self._queue is not None
         self._queue.put_nowait(job.id)
-        log.info("작업 추가 (%s): %s", "휴대폰" if source == "phone" else "PC", text.splitlines()[0][:60] if text else "")
+        first = text.strip().splitlines()[0][:60] if text.strip() else ""
+        extra = f"  (요청 전체 {len(text):,}자, {len(text.strip().splitlines())}줄 — 전부 분석합니다)" if "\n" in text.strip() or len(text) > 60 else ""
+        log.info("작업 추가 (%s): %s%s", "휴대폰" if source == "phone" else "PC", first, extra)
         return job
 
     async def wait(self, job: Job):

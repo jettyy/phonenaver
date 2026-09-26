@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .config import Config
 from .fetcher import Page
+from .command import LONG_TEXT
 from .images import resize_for_ai
 
 KST = ZoneInfo("Asia/Seoul")
@@ -215,6 +216,17 @@ class Writer:
             "- 각 항목 뒤에 근거 출처 URL을 적어 주세요.\n\n"
             f"주제/지시: {topic}"
         )
+        if len(topic) >= LONG_TEXT:
+            prompt = (
+                f"오늘은 {today()}입니다.\n"
+                "사용자가 네이버 블로그 글의 재료로 아래 글을 통째로 보냈습니다. 이 글을 새로 고쳐 쓰려고 합니다.\n"
+                "1) 아래 글을 **처음부터 끝까지 전부** 읽고, 다루는 주제와 핵심 주장·수치·가격·날짜·제도·일정을 모두 뽑으세요.\n"
+                "2) 뽑은 항목마다 웹 검색으로 **지금도 맞는지** 확인하세요. 바뀌었거나 오래된 내용은 최신 값과 기준 날짜로,\n"
+                "   원문에 없지만 독자에게 필요한 최신 소식(새 제도, 변경 예정, 신청 기간 등)도 찾아 더하세요.\n"
+                f"3) 검색은 {self.cfg.max_searches}번 이내로 하고, 확인하지 못한 내용은 '미확인'으로 표시하세요.\n"
+                "4) notes 에는 '원문 내용 → 최신 확인 결과(기준 날짜, 출처 URL)' 형태로 정리하세요.\n\n"
+                f"[사용자가 보낸 글 전체]\n{topic}"
+            )
         data = ResearchOut.model_validate(self._run(prompt, ResearchOut, tools=["WebSearch", "WebFetch"]))
         return Research(notes=data.notes, sources=[(s.title or s.url, s.url) for s in data.sources])
 
@@ -230,8 +242,17 @@ class Writer:
         user_photo_count: int = 0,
         photos: list[Path] | None = None,
         photo_analysis: PhotoAnalysis | None = None,
+        image_layout: str = "fixed",
     ) -> BlogPost:
         parts = [f"오늘 날짜: {today()}", f"[사용자 지시]\n{instruction or '(지시 없음 - 링크 내용으로 글 작성)'}"]
+        if len(instruction) >= LONG_TEXT:
+            parts.append(
+                "[긴 글 처리 규칙] 위 [사용자 지시] 는 사용자가 통째로 보낸 글(원문 자료)입니다.\n"
+                "- 원문 전체를 빠짐없이 분석해서 다루는 주제와 핵심 내용을 모두 반영하세요. 앞부분만 보고 쓰지 마세요.\n"
+                "- [최신 정보 조사 결과] 와 다르거나 오래된 내용은 최신 정보로 고치고, 새로 확인된 소식을 더하세요.\n"
+                "- 원문 문장을 그대로 옮기지 말고, 구성과 문장을 새로 써서 독자가 읽기 좋은 블로그 글로 만드세요.\n"
+                "- 원문 안에 사용자가 따로 적은 요청(말투, 분량, 카테고리 등)이 있으면 그것을 따르세요."
+            )
         if photo_analysis:
             parts.append(
                 "[사용자가 보낸 사진 분석]\n" + photo_analysis.as_text() + "\n"
@@ -264,11 +285,19 @@ class Writer:
                 "나머지 자리는 글 내용에 맞는 이미지 계획을 세우세요."
                 if user_photo_count else ""
             )
-            parts.append(
-                f"[이미지 {image_count}장]\n본문에 {markers} 를 각각 독립된 <p> 문단으로 한 번씩 넣어 "
-                "이미지가 들어갈 자리를 표시하세요. 첫 이미지는 도입부 바로 뒤, 나머지는 내용이 바뀌는 소제목 근처에 "
-                f"고르게 배치합니다. images 에는 순서대로 {image_count}개의 계획을 적으세요." + photo_note
-            )
+            if image_layout == "section":
+                parts.append(
+                    "[이미지] 사진은 프로그램이 도입부 바로 뒤 1장, 그리고 소제목(h2) 앞마다 1장씩 자동으로 넣습니다. "
+                    "본문에 [[IMAGE]] 표시는 넣지 마세요. images 에는 순서대로 '도입부용 1개 + 소제목 순서대로 1개씩' "
+                    f"(최대 {image_count}개) 계획을 적어, 각 사진이 바로 뒤에 오는 섹션 내용과 어울리게 하세요."
+                    + photo_note.replace("각 표시는 그 사진 내용을 설명하는 문단 바로 앞이나 뒤에 두세요. ", "")
+                )
+            else:
+                parts.append(
+                    f"[이미지 {image_count}장]\n본문에 {markers} 를 각각 독립된 <p> 문단으로 한 번씩 넣어 "
+                    "이미지가 들어갈 자리를 표시하세요. 첫 이미지는 도입부 바로 뒤, 나머지는 내용이 바뀌는 소제목 근처에 "
+                    f"고르게 배치합니다. images 에는 순서대로 {image_count}개의 계획을 적으세요." + photo_note
+                )
         if categories:
             listing = "\n".join(f"- {c}" for c in categories)
             parts.append(
@@ -278,7 +307,11 @@ class Writer:
             )
 
         if photos and not user_photo_count:
-            parts.append("[사진 사용 규칙] 보낸 사진은 내용 참고용입니다. 글에 첨부되지 않으니 '아래 사진처럼' 같은 표현은 쓰지 마세요.")
+            parts.append(
+                "[사진 사용 규칙] 사용자가 보낸 사진의 내용이 이 글의 핵심 소재입니다. 사진에서 확인한 장소·음식·제품·"
+                "가격·글자·분위기를 바탕으로 구체적으로 쓰세요. 단, 사진은 글에 첨부되지 않으니 '아래 사진처럼', "
+                "'사진을 보시면' 같은 표현은 쓰지 마세요. 사진에서 확인할 수 없는 내용은 지어내지 마세요."
+            )
         if photos:
             parts.insert(0, self._photo_prompt(photos))
         data = self._run("\n\n".join(parts), BlogPost, tools=["Read"] if photos else [], system=WRITER_SYSTEM)
@@ -291,7 +324,7 @@ WRITER_SYSTEM = """당신은 네이버 블로그 상위노출 경험이 많은 �
 글쓰기 원칙
 - 친근하고 읽기 쉬운 존댓말(~요, ~습니다 혼용). 광고 티 나는 과장 표현은 피합니다.
 - 도입부 2~3문장에서 독자가 얻을 내용을 먼저 알려 줍니다.
-- 소제목(h2) 3~6개로 구성하고, 필요하면 h3 를 씁니다. 문단은 2~4문장으로 짧게.
+- 소제목(h2) 3~6개로 구성하고, 필요하면 h3 를 씁니다. 문단은 2~3문장으로 짧게 끊고, 문단마다 <p> 로 나누세요 (빈 줄은 프로그램이 넣습니다).
 - 핵심 수치·날짜·주의 사항은 <strong> 으로 강조하고, 나열은 ul/ol, 비교는 table 을 씁니다.
 - 마지막에 요약 또는 한 줄 정리로 마무리합니다.
 - 분량은 사용자가 따로 말하지 않으면 공백 포함 2,000~3,000자.

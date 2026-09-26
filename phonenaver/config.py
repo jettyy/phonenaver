@@ -59,6 +59,11 @@ class Config:
     append_hashtags: bool = True
 
     image_count: int = 3
+    # 문단(소제목) 사이마다 사진 넣기: 도입부 뒤 + 소제목마다. 끄면 image_count 장만
+    image_per_section: bool = True
+    max_images: int = 8
+    # 문단 사이 빈 줄 수
+    paragraph_gap: int = 2
     thumbnail_card: bool = True
     pexels_api_key: str = ""
     font_path: str | None = None
@@ -87,6 +92,9 @@ class Config:
             include_sources=_bool("INCLUDE_SOURCES", False),
             append_hashtags=_bool("APPEND_HASHTAGS", True),
             image_count=_int("IMAGE_COUNT", 3),
+            image_per_section=_bool("IMAGE_PER_SECTION", True),
+            max_images=_int("MAX_IMAGES", 8),
+            paragraph_gap=_int("PARAGRAPH_GAP", 2),
             thumbnail_card=_bool("THUMBNAIL_CARD", True),
             pexels_api_key=os.getenv("PEXELS_API_KEY", "").strip(),
             font_path=os.getenv("FONT_PATH", "").strip() or None,

@@ -25,7 +25,7 @@ if mode == "login":
 schema = json.loads(args[args.index("--json-schema") + 1])
 props = schema["properties"]
 if "body_html" in props:
-    out = {"title": "제목", "body_html": "<p>본문</p><p>[[IMAGE1]]</p>", "tags": ["a"],
+    out = {"title": "제목", "body_html": "<p>도입</p><h2>A</h2><p>a</p><h2>B</h2><p>b</p><h2>C</h2><p>c</p>", "tags": ["a"],
            "images": [{"query": "q", "card_text": "c"}], "category": "여행"}
 elif "search_topic" in props:
     out = {"photos": ["카페 라떼 사진"], "overall": "카페 방문", "search_topic": "성수 카페"}
@@ -100,8 +100,8 @@ def test_login_error_message(writer, monkeypatch):
 
 
 @pytest.mark.parametrize("text, attached", [
-    ("이 사진 첨부해서 카페 후기 써줘", 1),
-    ("사진은 분석만 하고 카페 후기 써줘", 0),
+    ("사진도 첨부해서 카페 후기 써줘", 1),
+    ("이 사진으로 카페 후기 써줘", 0),  # 기본은 첨부 안 함
 ])
 def test_pipeline_photo_modes(writer, tmp_path, text, attached):
     import asyncio
@@ -118,8 +118,19 @@ def test_pipeline_photo_modes(writer, tmp_path, text, attached):
 
     assert result.photo_analysis is not None  # 두 경우 모두 사진은 분석
     assert result.photos_attached == attached
-    assert len(result.images) == 3
+    assert len(result.images) == 3  # 도입부 뒤 + 소제목 앞마다 (소제목 3개)
+    assert result.body_html.count("[[IMAGE") == 3
+    assert "<p><br/></p><p><br/></p><h2>" in result.body_html  # 문단 사이 빈 줄 2개
     assert [i.source for i in result.images].count("내 사진") == attached
     write_call = [c for c in _calls(writer) if "body_html" in c["args"][c["args"].index("--json-schema") + 1]][0]
     assert "사진 분석" in write_call["prompt"]
-    assert ("참고용" in write_call["prompt"]) == (attached == 0)
+    assert ("사진은 글에 첨부되지 않으니" in write_call["prompt"]) == (attached == 0)
+
+
+def test_long_text_is_fully_analyzed(writer):
+    long_text = "\n".join(f"{i}. 2024년 기준 청년 월세 지원은 월 20만원입니다." for i in range(1, 40)) + "\n마지막줄표시"
+    writer.research(long_text)
+    writer.write(long_text, None, [], [])
+    research_call, write_call = _calls(writer)
+    assert "[사용자가 보낸 글 전체]" in research_call["prompt"] and "마지막줄표시" in research_call["prompt"]
+    assert "[긴 글 처리 규칙]" in write_call["prompt"] and "마지막줄표시" in write_call["prompt"]

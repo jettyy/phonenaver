@@ -57,8 +57,19 @@ def test_category_and_no_images():
 
 
 def test_photo_modes():
-    assert parse("이 사진들 첨부해서 카페 후기 써줘").photo_mode == "attach"
-    assert parse("사진 분석해서 글 써줘").photo_mode == "attach"  # 기본은 첨부
-    for text in ("사진은 분석만 하고 글 써줘", "이미지 분석해서 쓰고 첨부는 하지 마",
-                 "사진 참고만 해서 써줘", "사진은 넣지 말고 내용만 반영해줘"):
+    # 기본: 사진은 분석해서 글 내용으로만 쓰고 첨부하지 않는다
+    for text in ("이 사진으로 카페 후기 써줘", "사진 분석해서 글 써줘", "사진은 분석만 하고 글 써줘",
+                 "사진은 첨부하지 마", "사진 넣지 말고 써줘", "이 링크 넣어줘 https://a.com", ""):
         assert parse(text).photo_mode == "analyze", text
+    # 사진을 넣어 달라고 분명히 말하면 첨부
+    for text in ("사진도 첨부해줘", "사진 그대로 넣어서 후기 써줘", "이미지 같이 첨부해서 써줘"):
+        assert parse(text).photo_mode == "attach", text
+
+
+def test_long_text_keeps_everything():
+    body = "\n".join(f"{i}번째 줄: 전세 월세 차이와 대출 금리 이야기입니다." for i in range(1, 31))
+    cmd = parse(body)
+    assert cmd.instruction.count("\n") == 29  # 줄바꿈 유지
+    assert "30번째 줄" in cmd.instruction  # 마지막 줄까지 전부
+    assert cmd.is_long and cmd.search
+    assert not parse("캠핑 준비물").is_long

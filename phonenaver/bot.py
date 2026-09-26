@@ -16,6 +16,11 @@ from .naver import NaverBlog, NaverError, NotLoggedIn
 
 log = logging.getLogger(__name__)
 
+# 설명 없이 사진만 보냈을 때의 기본 요청
+PHOTO_ONLY_REQUEST = "보낸 사진 내용을 분석해서 그 내용으로 블로그 글을 써줘"
+# 연달아 온 메시지(쪼개진 긴 글, 앨범 사진)를 하나로 합치기 위해 기다리는 시간(초)
+MERGE_SECONDS = 4
+
 HELP = """📝 네이버 블로그 자동 글쓰기 봇
 
 그냥 메시지를 보내면 글을 써서 '임시저장'합니다.
@@ -34,12 +39,16 @@ HELP = """📝 네이버 블로그 자동 글쓰기 봇
    그대로: 첫 줄은 제목
    둘째 줄부터 본문
 
-🖼 이미지: 글마다 3장 자동 삽입
-   · 사진을 보내면(앨범 가능) AI가 사진을 분석해서 글 내용에 반영
-     - "첨부해줘" (또는 아무 말 없으면) → 분석 + 내 사진을 글에 첨부
-     - "분석만 해줘" / "첨부는 하지 마" → 분석해서 내용에만 반영, 첨부 안 함
-     사진 설명(캡션)에 지시를 쓰거나, 사진 먼저 보내고 지시를 보내도 됨
-   · 부족한 장수는 무료 사진·카드 이미지로 채움
+📷 사진 보내기 → 사진 내용을 분석해서 그 내용으로 글 작성
+   · 사진 자체는 글에 첨부하지 않습니다
+   · 사진만 보내도 바로 글을 씁니다 (앨범 가능)
+   · 사진 설명(캡션)에 지시를 같이 쓰면 반영 (예: 카페 후기로 써줘, 1500자)
+   · 꼭 사진을 넣고 싶으면 "사진도 첨부해줘" 라고 쓰기
+
+📄 긴 글을 통째로 붙여넣으면 → 전체를 분석하고 최신 정보로 확인해서 새로 작성
+   (텔레그램이 여러 메시지로 쪼개도 4초 안에 온 것은 하나로 합쳐서 처리)
+
+🖼 문단 사이 빈 줄 2개 + 도입부 뒤·소제목마다 사진 자동 삽입
    · '사진 없이' 라고 쓰면 이미지 생략
 
 📂 카테고리: 글 내용에 맞게 자동 선택
@@ -159,18 +168,39 @@ def build_app(get_cfg, runner: JobRunner) -> Application:
             with open(result.draft.screenshot, "rb") as f:
                 await context.bot.send_photo(chat, f, caption="네이버 앱 > 글쓰기 > 임시저장 글에서 확인·발행하세요")
 
-    def spawn(coro) -> None:
-        # 글 하나가 끝날 때까지 봇이 다른 메시지를 못 받는 일이 없도록 따로 실행
-        app.create_task(coro)
+    def buffer_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str = "", photo: Path | None = None) -> None:
+        """휴대폰에서 연달아 온 메시지를 모아 하나의 요청으로 처리한다.
+
+        텔레그램은 긴 글을 붙여넣으면 여러 메시지로 쪼개 보내고, 앨범 사진도 한 장씩 따로 온다.
+        마지막 메시지 뒤 MERGE_SECONDS 동안 더 오는 것이 없으면 합쳐서 글 하나로 처리한다.
+        """
+        data = context.chat_data
+        buf = data.setdefault("buf", {"texts": [], "photos": []})
+        if text.strip():
+            buf["texts"].append(text)
+        if photo is not None:
+            buf["photos"].append(photo)
+        if data.get("timer"):
+            data["timer"].cancel()
+
+        async def flush() -> None:
+            await asyncio.sleep(MERGE_SECONDS)
+            data.pop("timer", None)
+            got = data.pop("buf", {"texts": [], "photos": []})
+            merged = "\n".join(got["texts"]).strip()
+            if not merged and got["photos"]:
+                merged = PHOTO_ONLY_REQUEST  # 사진만 보내도 바로 사진 내용으로 글을 쓴다 (첨부는 안 함)
+            if merged:
+                await process(update, context, merged, got["photos"])
+
+        data["timer"] = asyncio.create_task(flush())
 
     async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not allowed(update):
             return await deny(update)
-        photos = context.chat_data.pop("photos", [])  # 먼저 보내 둔 사진이 있으면 함께 사용
-        spawn(process(update, context, update.message.text or "", photos))
+        buffer_input(update, context, text=update.message.text or "")
 
     async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """사진(앨범 포함)을 받아 모은다. 앨범은 여러 메시지로 나눠 오므로 잠시 기다렸다 한 번에 처리."""
         if not allowed(update):
             return await deny(update)
         msg = update.message
@@ -179,27 +209,7 @@ def build_app(get_cfg, runner: JobRunner) -> Application:
         suffix = Path(file.file_path or "").suffix or ".jpg"
         path = upload_dir / f"{msg.chat_id}-{msg.message_id}{suffix}"
         await file.download_to_drive(path)
-
-        data = context.chat_data
-        data.setdefault("photos", []).append(path)
-        if msg.caption:
-            data["caption"] = msg.caption
-        if data.get("timer"):
-            data["timer"].cancel()
-
-        async def flush() -> None:
-            await asyncio.sleep(3)
-            data.pop("timer", None)
-            caption = data.pop("caption", None)
-            if caption:
-                await process(update, context, caption, data.pop("photos", []))
-            else:
-                n = len(data.get("photos", []))
-                await context.bot.send_message(
-                    msg.chat_id, f"📷 사진 {n}장 받았어요. 이제 글 주제나 링크를 보내 주세요. (이 사진들을 글에 넣습니다)"
-                )
-
-        data["timer"] = asyncio.create_task(flush())
+        buffer_input(update, context, text=msg.caption or "", photo=path)
 
     app.add_handler(CommandHandler(["start", "help"], start))
     app.add_handler(CommandHandler("id", chat_id))

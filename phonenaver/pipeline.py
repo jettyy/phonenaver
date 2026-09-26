@@ -80,6 +80,7 @@ class Pipeline:
             count = len(attach)  # 그대로 모드는 보낸 사진만 넣는다
             body = html_utils.text_to_html("\n".join(lines[1:]) or cmd.text)
             body = images.ensure_markers(body, count) if count else body
+            body = html_utils.add_paragraph_gaps(body, self.cfg.paragraph_gap)
             post = BlogPost(title=title, body_html=body, tags=[], images=[], category=cmd.category or "")
             cats = await self._categories(cmd, warnings) if cmd.category else []
             category = match_category(cmd.category, cats) or (Category(name=cmd.category) if cmd.category else None)
@@ -89,7 +90,13 @@ class Pipeline:
                 photos_received=len(photos), photos_attached=len(attach),
             )
 
-        image_count = 0 if cmd.no_images else max(self.cfg.image_count, len(attach))
+        per_section = self.cfg.image_per_section
+        if cmd.no_images:
+            image_count = 0
+        elif per_section:  # 문단(소제목) 사이마다 — 최종 장수는 글이 나온 뒤 소제목 수로 정해진다
+            image_count = max(self.cfg.max_images, len(attach))
+        else:
+            image_count = max(self.cfg.image_count, len(attach))
 
         photo_analysis = None
         if photos:
@@ -126,10 +133,14 @@ class Pipeline:
             len(attach),
             photos,
             photo_analysis,
+            "section" if per_section else "fixed",
         )
 
         body = html_utils.sanitize(post.body_html)
         body = html_utils.append_links_section(body, cmd.insert_urls)  # 빠뜨린 링크 보정
+        if image_count and per_section:
+            # 사진 자리: 도입부 뒤 + 소제목 앞마다 (태그·출처보다 먼저 정해야 끝에 사진이 붙지 않음)
+            body, image_count = images.place_by_section(body, self.cfg.max_images, len(attach))
         if self.cfg.include_sources and research and research.sources:
             items = "".join(
                 f'<li><a href="{html.escape(u)}">{html.escape(t)}</a></li>' for t, u in research.sources[:8]
@@ -137,8 +148,9 @@ class Pipeline:
             body += f"\n<h3>참고 자료</h3>\n<ul>{items}</ul>"
         if self.cfg.append_hashtags and post.tags:
             body += "\n<p>" + " ".join("#" + t.replace(" ", "").lstrip("#") for t in post.tags) + "</p>"
-        if image_count:
+        if image_count and not per_section:
             body = images.ensure_markers(body, image_count)
+        body = html_utils.add_paragraph_gaps(body, self.cfg.paragraph_gap)  # 문단 사이 빈 줄
 
         wanted = cmd.category or post.category
         category = match_category(wanted, cats)

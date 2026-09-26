@@ -68,3 +68,28 @@ def append_links_section(raw_html: str, urls: list[str], heading: str = "관련 
     return f"{raw_html}\n<h3>{html.escape(heading)}</h3>\n<ul>{items}</ul>"
 
 
+
+
+BLOCK_TAGS = {"p", "h2", "h3", "ul", "ol", "table", "blockquote", "hr"}
+# 인포러시에서 실제 네이버 에디터로 검증된 빈 줄 형태
+BLANK = "<p><br></p>"
+
+
+def add_paragraph_gaps(raw_html: str, blank_lines: int = 2) -> str:
+    """문단·소제목·표·사진 사이마다 빈 줄을 넣어 읽기 편하게 한다."""
+    if blank_lines <= 0:
+        return raw_html
+    soup = BeautifulSoup(raw_html, "html.parser")
+    blocks = [b for b in soup.contents if getattr(b, "name", None) in BLOCK_TAGS]
+    # 이미 빈 문단이 있으면 지우고 일정하게 다시 넣는다
+    for b in blocks:
+        if b.name == "p" and not b.get_text(strip=True) and not b.find(["a", "img"]):
+            b.decompose()
+    blocks = [b for b in soup.contents if getattr(b, "name", None) in BLOCK_TAGS]
+    marker = re.compile(r"^\[\[IMAGE\d+\]\]$")
+    for b, nxt in zip(blocks, blocks[1:]):
+        # 사진 자리 표시 문단은 사진을 넣으면서 빈 줄로 남으므로, 그 앞에는 하나 덜 넣어 위아래를 똑같이 맞춘다
+        n = blank_lines - 1 if marker.match(nxt.get_text(strip=True)) else blank_lines
+        for _ in range(n):
+            b.insert_after(BeautifulSoup(BLANK, "html.parser"))
+    return str(soup)

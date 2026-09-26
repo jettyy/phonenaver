@@ -32,6 +32,9 @@ UPLOADS = DATA / "images" / "uploads"
 # 대시보드 [설정] 칸에서 바꿀 수 있는 값 (.env 키, 종류)
 SETTINGS = {
     "IMAGE_COUNT": "int",
+    "IMAGE_PER_SECTION": "bool",
+    "MAX_IMAGES": "int",
+    "PARAGRAPH_GAP": "int",
     "THUMBNAIL_CARD": "bool",
     "PEXELS_API_KEY": "secret",
     "APPEND_HASHTAGS": "bool",
@@ -67,7 +70,8 @@ class State:
             env[key] = {"set": bool(value)} if kind == "secret" else value
         cfg = self.cfg
         env.update({
-            "IMAGE_COUNT": cfg.image_count, "THUMBNAIL_CARD": cfg.thumbnail_card, "APPEND_HASHTAGS": cfg.append_hashtags,
+            "IMAGE_COUNT": cfg.image_count, "IMAGE_PER_SECTION": cfg.image_per_section, "MAX_IMAGES": cfg.max_images,
+            "PARAGRAPH_GAP": cfg.paragraph_gap, "THUMBNAIL_CARD": cfg.thumbnail_card, "APPEND_HASHTAGS": cfg.append_hashtags,
             "INCLUDE_SOURCES": cfg.include_sources, "AUTO_CATEGORY": cfg.auto_category, "HEADLESS": cfg.headless,
             "CLAUDE_MODEL": cfg.claude_model, "MAX_SEARCHES": cfg.max_searches, "NAVER_BLOG_ID": cfg.naver_blog_id,
         })
@@ -231,7 +235,7 @@ def build(state: State, open_url: str | None = None) -> web.Application:
     async def add_job(request):
         form = await request.post()
         text = str(form.get("text", "")).strip()
-        mode = str(form.get("photoMode", "attach"))
+        mode = str(form.get("photoMode", "analyze"))
         dry = str(form.get("dry", "")) in ("1", "true", "on")
         photos: list[Path] = []
         UPLOADS.mkdir(parents=True, exist_ok=True)
@@ -245,7 +249,7 @@ def build(state: State, open_url: str | None = None) -> web.Application:
         if not text and not photos:
             return json_err("글 주제나 지시를 입력해 주세요.")
         if not text:
-            text = "보낸 사진으로 블로그 글 써줘"
+            text = "보낸 사진 내용을 분석해서 그 내용으로 블로그 글을 써줘"
         if dry and not text.lower().startswith(("/test", "/dry")):
             text = "/test " + text
         job = state.runner.submit(text, photos, source="pc", photo_mode=mode if photos else None)

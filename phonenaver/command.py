@@ -18,10 +18,11 @@ SEARCH_WORDS = ("검색", "최신", "찾아", "조사", "요즘", "최근")
 RAW_PREFIXES = ("그대로:", "그대로 :", "원문:", "/raw")
 DRY_PREFIXES = ("/test", "/dry", "미리보기:")
 CATEGORY_RE = re.compile(r"카테고리\s*[:：]\s*([^\n,]+?)\s*(?:[,\n]|$)")
-# 보낸 사진을 '분석만' 하고 글에는 첨부하지 않는 표현
-ANALYZE_ONLY_RE = re.compile(
-    r"분석만|참고만|참고용|첨부\s*(?:하지|는\s*하지|말|안|없이|x)|(?:넣지|올리지|붙이지)\s*(?:말|마)",
-    re.IGNORECASE,
+# 보낸 사진은 기본적으로 '분석해서 글 내용으로만' 쓰고 첨부하지 않는다.
+# 아래처럼 사진을 글에 넣어 달라고 분명히 말한 경우에만 첨부한다.
+ATTACH_RE = re.compile(
+    r"(?:사진|이미지)(?:도|을|를|은|는)?\s*(?:같이\s*|함께\s*|그대로\s*|글에\s*|본문에\s*)*"
+    r"(?:첨부|넣어|넣고|올려|붙여)(?!\s*(?:하지|는\s*하지|말|마|없이))",
 )
 NO_IMAGE_RE = re.compile(r"(이미지|사진)\s*(없이|빼고|넣지\s*마)")
 
@@ -37,13 +38,27 @@ class Command:
     dry_run: bool = False
     category: str | None = None  # "카테고리: 여행" 처럼 직접 지정한 경우
     no_images: bool = False  # "이미지 없이"
-    # 보낸 사진 처리: "attach" = 분석 + 본문 첨부(기본), "analyze" = 분석해서 내용에만 반영
-    photo_mode: str = "attach"
+    # 보낸 사진 처리: "analyze" = 분석해서 글 내용으로만 씀(기본), "attach" = 분석 + 사진도 본문에 첨부
+    photo_mode: str = "analyze"
+
+    @property
+    def is_long(self) -> bool:
+        """긴 글을 붙여넣은 경우: 전체를 분석하고 최신 정보로 확인해서 새로 쓴다."""
+        return len(self.instruction) >= LONG_TEXT
 
     @property
     def analyze_urls(self) -> list[str]:
         """본문 삽입용이 아닌, 분석 대상으로만 준 링크."""
         return [u for u in self.urls if u not in self.insert_urls]
+
+
+LONG_TEXT = 300  # 이보다 긴 글은 '분석할 원문 자료' 로 본다
+
+
+def clean_text(text: str) -> str:
+    """줄바꿈은 살리고, 줄 안의 공백과 너무 많은 빈 줄만 정리."""
+    lines = [re.sub(r"[ \t\u00a0]+", " ", ln).strip() for ln in text.splitlines()]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
 def _clean_url(url: str) -> str:
@@ -70,7 +85,7 @@ def parse(text: str) -> Command:
         category = m.group(1).strip()
         text = (text[:m.start()] + "\n" + text[m.end():]).strip()
     no_images = bool(NO_IMAGE_RE.search(text))
-    photo_mode = "analyze" if ANALYZE_ONLY_RE.search(text) else "attach"
+    photo_mode = "attach" if ATTACH_RE.search(text) else "analyze"
 
     for prefix in RAW_PREFIXES:
         if text.lower().startswith(prefix):
@@ -99,7 +114,7 @@ def parse(text: str) -> Command:
             if line_insert:
                 insert_urls.append(url)
 
-    instruction = re.sub(r"\s+", " ", URL_RE.sub(" ", text)).strip()
+    instruction = clean_text(URL_RE.sub(" ", text))
     analyze_only = [u for u in urls if u not in insert_urls]
     # 분석할 링크를 줬으면 그 링크가 주 재료. 검색하라는 말이 있을 때만 추가 검색.
     search = not analyze_only or _has_any(instruction, SEARCH_WORDS)

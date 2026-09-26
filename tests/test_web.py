@@ -65,7 +65,7 @@ def test_dashboard_api(env, tmp_path):
                 if job.status in ("done", "failed"):
                     break
             assert job.status == "done", job.error
-            assert job.title == "제목" and len(job.images) == 1 and job.dry_run
+            assert job.title == "제목" and len(job.images) == 3 and job.dry_run  # 소제목마다 사진
 
             # 기록 파일에 남아서 다시 켜도 보임
             again = jobs.JobRunner(lambda: state.cfg, state.session, state.events)

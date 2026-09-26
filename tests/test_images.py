@@ -52,3 +52,35 @@ def test_parse_category_json_and_match():
     assert match_category("it리뷰", cats).no == 5
     assert match_category("요리", cats) is None
     assert match_category("", [Category("a")]) is None
+
+
+def test_place_by_section_puts_photo_between_every_section():
+    body = "<p>도입1</p><p>도입2</p><p>[[IMAGE1]]</p>" + "".join(f"<h2>S{k}</h2><p>t{k}</p>" for k in range(1, 5))
+    out, n = images.place_by_section(body, 8)
+    assert n == 4  # 도입부 뒤(첫 소제목 앞) + 나머지 소제목 앞마다
+    for k in range(1, 5):
+        assert f"<p>[[IMAGE{k}]]</p><h2>S{k}</h2>" in out
+    assert out.count("[[IMAGE") == 4  # AI 가 넣은 표시는 지우고 새로
+
+
+def test_place_by_section_limits_and_spreads_evenly():
+    body = "<p>i</p>" + "".join(f"<h2>S{k}</h2><p>t{k}</p>" for k in range(1, 7))
+    out, n = images.place_by_section(body, 3)
+    assert n == 3
+    assert "<p>[[IMAGE1]]</p><h2>S1</h2>" in out and "<p>[[IMAGE3]]</p><h2>S6</h2>" in out
+
+
+def test_place_by_section_without_headings_and_short_text():
+    out, n = images.place_by_section("".join(f"<p>{k}</p>" for k in range(1, 8)), 8)
+    assert n >= 2 and not out.startswith("<p>[[IMAGE")
+    out, n = images.place_by_section("<p>한 문단</p>", 8)
+    assert n == 1 and out == "<p>한 문단</p><p>[[IMAGE1]]</p>"
+
+
+def test_paragraph_gaps():
+    from phonenaver.html_utils import add_paragraph_gaps
+
+    out = add_paragraph_gaps("<p>a</p><p></p><h2>b</h2><ul><li>x</li></ul><p>c</p>", 2)
+    gap = "<p><br/></p><p><br/></p>"
+    assert out == f"<p>a</p>{gap}<h2>b</h2>{gap}<ul><li>x</li></ul>{gap}<p>c</p>"
+    assert add_paragraph_gaps("<p>a</p><p>b</p>", 0) == "<p>a</p><p>b</p>"

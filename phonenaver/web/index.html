@@ -13,7 +13,7 @@
     <div>
       <h1>폰네이버</h1>
       <p>휴대폰(텔레그램)이나 이 화면에서 지시하면, 최신 정보·링크·사진을 분석해 글을 쓰고
-        이미지 3장과 카테고리까지 넣어 네이버 블로그에 임시저장합니다.</p>
+        문단 사이마다 사진과 카테고리까지 넣어 네이버 블로그에 임시저장합니다.</p>
     </div>
   </div>
   <div class="pills">
@@ -67,8 +67,8 @@
       </label>
       <span class="photo-thumbs" id="photo-thumbs"></span>
       <span id="photo-mode" class="hidden">
-        <label class="radio"><input type="radio" name="photoMode" value="attach" checked> 분석 + 글에 첨부</label>
-        <label class="radio"><input type="radio" name="photoMode" value="analyze"> 분석만 (첨부 안 함)</label>
+        <label class="radio"><input type="radio" name="photoMode" value="analyze" checked> 분석해서 내용으로만 쓰기 (첨부 안 함)</label>
+        <label class="radio"><input type="radio" name="photoMode" value="attach"> 분석 + 사진도 글에 첨부</label>
         <button class="btn ghost small" id="btn-photo-clear" type="button">사진 빼기</button>
       </span>
     </div>
@@ -120,9 +120,19 @@
     </div>
     <div class="settings hidden" id="settings">
       <div class="grid">
-        <label>글마다 넣을 이미지 수
+        <label class="check"><input id="s-IMAGE_PER_SECTION" type="checkbox"> 문단(소제목) 사이마다 사진 넣기
+          <span class="sub">도입부 뒤 1장 + 소제목 앞마다 1장. 끄면 아래 '고정 장수' 만큼만 넣습니다</span></label>
+        <label>사진 최대 장수
+          <input id="s-MAX_IMAGES" type="number" min="1" max="15">
+          <span class="sub">소제목이 이보다 많으면 고르게 골라 넣습니다</span>
+        </label>
+        <label>고정 장수 (위 항목을 껐을 때)
           <input id="s-IMAGE_COUNT" type="number" min="0" max="10">
-          <span class="sub">내 사진 → 무료 사진 → 카드 이미지 순으로 채웁니다</span>
+          <span class="sub">무료 사진 → 카드 이미지 순으로 채웁니다</span>
+        </label>
+        <label>문단 사이 빈 줄
+          <input id="s-PARAGRAPH_GAP" type="number" min="0" max="4">
+          <span class="sub">문단·소제목·표·사진 사이에 넣을 빈 줄 수 (기본 2)</span>
         </label>
         <label>Pexels 무료 사진 키
           <input id="s-PEXELS_API_KEY" type="password" autocomplete="new-password">

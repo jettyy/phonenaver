@@ -272,3 +272,45 @@ def resize_for_ai(path: Path, out_dir: Path, max_side: int = 1568) -> Path:
         img.thumbnail((max_side, max_side))
         img.save(out, "JPEG", quality=85)
     return out
+
+
+def place_by_section(body_html: str, max_count: int, min_count: int = 0) -> tuple[str, int]:
+    """이미지 자리를 '문단(섹션) 사이마다' 놓는다: 도입부 뒤 1장 + 소제목(h2) 앞마다 1장.
+
+    AI 가 넣은 표시는 지우고 위치를 새로 정한다. 소제목이 없으면 문단 2~3개마다.
+    자리가 max_count 보다 많으면 고르게 골라 쓰고, min_count(보낸 사진 수)보다 적으면 사이사이 더 만든다.
+    돌려주는 값: (html, 이미지 수)
+    """
+    soup = BeautifulSoup(MARKER_RE.sub("", body_html), "html.parser")
+    for p in soup.find_all("p"):
+        if not p.get_text(strip=True) and not p.find(["a", "br"]):
+            p.decompose()
+    blocks = [b for b in soup.contents if getattr(b, "name", None)]
+    if not blocks or max_count <= 0:
+        return str(soup), 0
+
+    heads = [i for i, b in enumerate(blocks) if b.name == "h2"]
+    # 이미지 뒤에 올 블록의 위치(인덱스) — 그 블록 '앞'에 이미지를 넣는다
+    if heads:
+        slots = [heads[0]] if heads[0] > 0 else [1]
+        slots += heads[1:]
+    else:
+        slots = list(range(1, len(blocks), 3))
+    slots = sorted(set(s for s in slots if 0 < s < len(blocks)))
+    # 보낸 사진이 더 많으면 남은 문단 사이에 더 넣는다
+    extra = [i for i in range(1, len(blocks)) if i not in slots and blocks[i].name != "h3"]
+    while len(slots) < min_count and extra:
+        slots.append(extra.pop(len(extra) // 2))
+        slots.sort()
+    if not slots:  # 아주 짧은 글(문단 1개): 본문 뒤에 넣는다
+        for n in range(max(1, min_count), 0, -1):
+            blocks[0].insert_after(_new_marker(soup, n))
+        return str(soup), max(1, min_count)
+    want = min(len(slots), max(max_count, min_count))
+    if 1 < want < len(slots):  # 처음부터 끝까지 고르게 골라 쓰기
+        slots = [slots[round(i * (len(slots) - 1) / (want - 1))] for i in range(want)]
+    elif want == 1:
+        slots = slots[:1]
+    for n, idx in enumerate(slots, 1):
+        blocks[idx].insert_before(_new_marker(soup, n))
+    return str(soup), len(slots)

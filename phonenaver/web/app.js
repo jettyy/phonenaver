@@ -95,8 +95,8 @@ function renderConnect(msg) {
 }
 
 // ── 설정 ─────────────────────────────────
-const BOOLS = ['THUMBNAIL_CARD', 'AUTO_CATEGORY', 'APPEND_HASHTAGS', 'INCLUDE_SOURCES', 'HEADLESS'];
-const VALUES = ['IMAGE_COUNT', 'MAX_SEARCHES', 'CLAUDE_MODEL'];
+const BOOLS = ['IMAGE_PER_SECTION', 'THUMBNAIL_CARD', 'AUTO_CATEGORY', 'APPEND_HASHTAGS', 'INCLUDE_SOURCES', 'HEADLESS'];
+const VALUES = ['IMAGE_COUNT', 'MAX_IMAGES', 'PARAGRAPH_GAP', 'MAX_SEARCHES', 'CLAUDE_MODEL'];
 
 function renderSettings(s) {
   if (!s) return;
@@ -240,14 +240,18 @@ function hhmm(ts) {
 
 function jobRow(j) {
   const req = (j.text || '').split('\n')[0].replace(/^\/(test|dry)\s*/i, '');
-  const title = j.title ? `<div class="job-title">${esc(j.title)}</div><div class="job-req">요청: ${esc(req)}</div>`
-    : `<div class="job-title">${esc(req) || '(사진만)'}</div>`;
+  const full = (j.text || '').replace(/^\/(test|dry)\s*/i, '').trim();
+  const lines = full ? full.split('\n').length : 0;
+  const more = full.length > req.length ? ` <span class="job-more">(요청 전체 ${full.length.toLocaleString()}자${lines > 1 ? ', ' + lines + '줄' : ''})</span>` : '';
+  const photos = j.photos ? ` <span class="job-more">📷 ${j.photos}장</span>` : '';
+  const title = j.title ? `<div class="job-title">${esc(j.title)}</div><div class="job-req" title="${esc(full)}">요청: ${esc(req)}${more}${photos}</div>`
+    : `<div class="job-title" title="${esc(full)}">${esc(req) || '(사진만)'}${more}${photos}</div>`;
   const msg = j.status === 'running' || j.status === 'queued' ? `<div class="job-msg">${esc(j.message)}</div>` : '';
   const err = j.error ? `<div class="job-warn">${esc(j.error)}</div>` : '';
   const warn = (j.warnings || []).map((w) => `<div class="job-warn">⚠️ ${esc(w)}</div>`).join('');
   const login = j.needs_login ? '<button class="btn small primary" data-login="1">네이버 로그인</button>' : '';
   const actions = [
-    j.status === 'done' || j.preview ? `<button class="btn small ghost" data-view="${j.id}">${state.open.has(j.id) ? '접기' : '보기'}</button>` : '',
+    `<button class="btn small ghost" data-view="${j.id}">${state.open.has(j.id) ? '접기' : '보기'}</button>`,
     j.status === 'failed' || j.status === 'canceled' || j.status === 'done' ? `<button class="btn small" data-retry="${j.id}">다시</button>` : '',
     j.status !== 'running' ? `<button class="btn small ghost danger" data-del="${j.id}">${j.status === 'queued' ? '취소' : '삭제'}</button>` : '',
     login,
@@ -267,7 +271,8 @@ function jobRow(j) {
     const images = (j.images || []).map((p, i) => `<a href="${fileUrl(p)}" target="_blank" title="${esc((j.image_sources || [])[i] || '')}"><img src="${fileUrl(p)}"></a>`).join('');
     const shot = j.screenshot ? `<a class="post-link" href="${fileUrl(j.screenshot)}" target="_blank">에디터 화면 캡처 보기</a>` : '';
     const tags = j.tags && j.tags.length ? `<div class="job-msg">태그: ${esc(j.tags.join(', '))}</div>` : '';
-    html += `<tr class="job-detail"><td colspan="8">
+    const request = `<details class="job-request"${j.preview ? '' : ' open'}><summary>보낸 요청 전체 보기 (${full.length.toLocaleString()}자)</summary><pre>${esc(full)}</pre></details>`;
+    html += `<tr class="job-detail"><td colspan="8">${request}
       <div class="job-images">${images}</div>${shot}${tags}<pre>${esc(j.preview || '')}</pre></td></tr>`;
   }
   return html;
