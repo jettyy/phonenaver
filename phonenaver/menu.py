@@ -160,6 +160,8 @@ def run_bot(cfg: Config) -> None:
     from .bot import run_bot as _run
 
     print("\n🤖 봇 실행 중 — 휴대폰 텔레그램으로 글쓰기 지시를 보내세요.")
+    if cfg.slr_watch:
+        print(f"   🔔 SLR클럽 장터 알림도 함께 동작합니다 ({cfg.slr_interval}초마다, 키워드는 휴대폰에서 /watch)")
     print("   이 창을 닫거나 Ctrl+C 를 누르면 멈춥니다. (컴퓨터가 잠자기에 들어가지 않게 해 주세요)\n")
     _run(cfg)
 
@@ -206,6 +208,52 @@ def show_categories(cfg: Config) -> None:
     print("\n".join(f"  · {c.label}" for c in cats) or "카테고리를 찾지 못했습니다.")
 
 
+def slr_keywords(cfg: Config) -> None:
+    from . import slrwatch
+
+    store = slrwatch.WatchStore(cfg.slr_watch_file)
+    while True:
+        kws = store.keywords
+        print("\n── SLR클럽 장터 알림 키워드 ──")
+        print("\n".join(f"  {i}. {kw}" for i, kw in enumerate(kws, 1)) or "  (없음)")
+        print("  봇이 켜져 있는 동안 제목에 키워드가 들어간 새 글이 올라오면 휴대폰으로 링크를 보내요.")
+        print("  규칙: 띄어쓰기 = 모두 포함, a7m5|a7v = 둘 중 하나, -배터리 = 제외")
+        print("  a. 추가   d. 삭제   t. 지금 목록에서 찾아보기   엔터. 돌아가기")
+        choice = input("> ").strip().lower()
+        if choice == "a":
+            added = store.add(slrwatch.split_keywords(input("추가할 키워드 (쉼표로 여러 개)\n> ")))
+            print("✅ 추가: " + ", ".join(added) if added else "추가된 키워드가 없어요.")
+        elif choice == "d":
+            removed = store.remove(input("지울 번호나 키워드\n> "))
+            print(f"🗑 삭제: {removed}" if removed else "찾지 못했어요.")
+        elif choice == "t":
+            show_slr_matches(cfg, kws)
+        else:
+            return
+
+
+def show_slr_matches(cfg: Config, keywords: list[str]) -> None:
+    from . import slrwatch
+
+    async def run() -> list:
+        watcher = slrwatch.SlrWatcher(cfg)
+        try:
+            return await watcher.fetch_page(1)
+        finally:
+            await watcher.close()
+
+    try:
+        posts = asyncio.run(run())
+    except Exception as exc:
+        print(f"❌ 장터 목록을 읽지 못했습니다: {exc}")
+        return
+    print(f"첫 페이지 글 {len(posts)}개")
+    for p in posts:
+        kws = slrwatch.matched_keywords(p.title, keywords) if keywords else []
+        if kws or not keywords:
+            print(f"  {'🔔 ' if kws else ''}{p.title}  ({p.author} {p.date})\n     {p.url}")
+
+
 def claude_login() -> None:
     from .ai import find_claude
 
@@ -237,6 +285,7 @@ MENU = """
  5. 내 블로그 카테고리 보기
  6. Claude 로그인 다시 하기
  7. 최신 버전으로 업데이트
+ 8. SLR클럽 장터 알림 키워드
  0. 종료
 ──────────────────────────────"""
 
@@ -260,6 +309,7 @@ def main() -> int:
         "5": lambda: show_categories(cfg),
         "6": claude_login,
         "7": update,
+        "8": lambda: slr_keywords(cfg),
     }
     while True:
         print(MENU)

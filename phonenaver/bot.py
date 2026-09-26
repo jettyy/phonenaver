@@ -5,11 +5,11 @@ import asyncio
 import logging
 from pathlib import Path
 
-from telegram import InputMediaPhoto, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from . import html_utils, images
+from . import html_utils, images, slrwatch
 from .config import Config
 from .naver import NaverError
 from .pipeline import Pipeline
@@ -48,7 +48,15 @@ HELP = """📝 네이버 블로그 자동 글쓰기 봇
 
 · 앞에 /test 를 붙이면 저장하지 않고 미리보기만 보냅니다.
 · 말투·분량·대상도 자유롭게 지시하세요. (예: 1500자, 반말, 초보자용)
-· /id 채팅 ID 확인"""
+· /id 채팅 ID 확인
+
+🔔 SLR클럽 장터(팝니다) 새 글 알림
+   제목에 키워드가 들어간 글이 올라오면 링크를 보내 줍니다.
+   · /watch 소니 a7m5   키워드 등록 (쉼표로 여러 개)
+       띄어쓰기 = 모두 포함, a7m5|a7v = 둘 중 하나, -배터리 = 제외
+   · /watches   등록한 키워드 보기
+   · /unwatch 1   번호나 키워드로 삭제 (/unwatch all 전부)
+   · /slr   지금 목록에서 키워드에 맞는 글 보기"""
 
 
 def build_app(cfg: Config) -> Application:
@@ -96,6 +104,124 @@ def build_app(cfg: Config) -> Application:
             await msg.edit_text("카테고리를 찾지 못했습니다. .env 의 NAVER_CATEGORIES 에 직접 적어 주세요.")
             return
         await msg.edit_text("📂 내 블로그 카테고리\n" + "\n".join(f"· {c.label}" for c in cats))
+
+    # ── SLR클럽 장터 알림 ──────────────────────────────
+    watcher = slrwatch.SlrWatcher(cfg)
+    store = watcher.store
+
+    def keyword_list() -> str:
+        kws = store.keywords
+        if not kws:
+            return "등록된 키워드가 없습니다. 예) /watch 소니 a7m5"
+        return "🔔 SLR 장터 알림 키워드\n" + "\n".join(f"{i}. {kw}" for i, kw in enumerate(kws, 1))
+
+    async def current_hits(keywords: list[str]) -> str:
+        posts = await watcher.snapshot()
+        found = [(p, slrwatch.matched_keywords(p.title, keywords)) for p in posts]
+        found = [(p, kws) for p, kws in found if kws]
+        if not found:
+            return f"지금 첫 페이지({len(posts)}개 글)에는 맞는 글이 없어요. 새로 올라오면 알려 드릴게요."
+        lines = [f"지금 첫 페이지에서 찾은 글 {len(found)}개:"]
+        for p, kws in found[:10]:
+            lines.append(f"· {p.title}\n  {p.url}")
+        return "\n".join(lines)
+
+    async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not allowed(update):
+            return await deny(update)
+        text = (update.message.text or "").split(maxsplit=1)
+        kws = slrwatch.split_keywords(text[1]) if len(text) > 1 else []
+        if not kws:
+            await update.message.reply_text(keyword_list() + "\n\n등록: /watch 키워드 (예: /watch 라이카 q2, a7m5|a7v)")
+            return
+        added = store.add(kws)
+        head = ("✅ 등록: " + ", ".join(added)) if added else "이미 등록된 키워드예요."
+        msg = await update.message.reply_text(head + "\n🔎 지금 목록 확인 중...")
+        try:
+            found = await current_hits(kws)
+        except Exception as exc:
+            found = f"⚠️ 장터 목록을 읽지 못했습니다: {exc}"
+        extra = "" if cfg.slr_watch else "\n⚠️ .env 의 SLR_WATCH=false 라서 자동 알림이 꺼져 있어요."
+        await msg.edit_text(f"{head}\n{found}\n\n{keyword_list()}{extra}", disable_web_page_preview=True)
+
+    async def unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not allowed(update):
+            return await deny(update)
+        text = (update.message.text or "").split(maxsplit=1)
+        target = text[1].strip() if len(text) > 1 else ""
+        if not target:
+            await update.message.reply_text(keyword_list() + "\n\n삭제: /unwatch 번호 또는 키워드 (/unwatch all 전부)")
+            return
+        if target.lower() in ("all", "전부", "전체", "모두"):
+            n = store.clear()
+            await update.message.reply_text(f"🗑 키워드 {n}개를 모두 지웠어요. 알림이 멈춥니다.")
+            return
+        removed = store.remove(target)
+        head = f"🗑 삭제: {removed}" if removed else f"'{target}' 키워드를 찾지 못했어요."
+        await update.message.reply_text(f"{head}\n\n{keyword_list()}")
+
+    async def watches(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+        if not allowed(update):
+            return await deny(update)
+        state = "켜짐" if cfg.slr_watch else "꺼짐 (.env SLR_WATCH)"
+        await update.message.reply_text(f"{keyword_list()}\n\n자동 알림: {state}, {cfg.slr_interval}초마다 확인")
+
+    async def slr_now(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+        if not allowed(update):
+            return await deny(update)
+        kws = store.keywords
+        if not kws:
+            await update.message.reply_text(keyword_list())
+            return
+        msg = await update.message.reply_text("🔎 SLR 장터 목록 확인 중...")
+        try:
+            found = await current_hits(kws)
+        except Exception as exc:
+            found = f"⚠️ 장터 목록을 읽지 못했습니다: {exc}"
+        await msg.edit_text(found, disable_web_page_preview=True)
+
+    async def notify_all(bot, text: str, **kw) -> None:
+        for chat in cfg.allowed_chat_ids:
+            try:
+                await bot.send_message(chat, text, **kw)
+            except Exception:
+                log.exception("알림 전송 실패 (%s)", chat)
+
+    async def slr_loop(application: Application) -> None:
+        fails = 0
+        while True:
+            try:
+                if store.keywords:
+                    for post, kws in await watcher.poll():
+                        button = InlineKeyboardMarkup([[InlineKeyboardButton("🔗 글 바로 보기", url=post.url)]])
+                        await notify_all(application.bot, slrwatch.format_hit(post, kws), reply_markup=button)
+                else:
+                    store.reset_baseline()
+                if fails >= 5:
+                    await notify_all(application.bot, "✅ SLR 장터 확인이 다시 정상으로 돌아왔어요.")
+                fails = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                fails += 1
+                log.warning("SLR 장터 확인 실패 (%d번째): %s", fails, exc)
+                if fails == 5:
+                    await notify_all(application.bot, f"⚠️ SLR 장터 확인이 계속 실패하고 있어요: {exc}\n(계속 다시 시도합니다)")
+            await asyncio.sleep(cfg.slr_interval)
+
+    async def on_start(application: Application) -> None:
+        if cfg.slr_watch:
+            application.bot_data["slr_task"] = asyncio.create_task(slr_loop(application))
+            log.info("SLR 장터 알림 시작 (%d초 간격, 키워드 %d개)", cfg.slr_interval, len(store.keywords))
+
+    async def on_stop(application: Application) -> None:
+        task = application.bot_data.pop("slr_task", None)
+        if task:
+            task.cancel()
+        await watcher.close()
+
+    app.post_init = on_start
+    app.post_shutdown = on_stop
 
     async def process(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, photos: list[Path]) -> None:
         chat = update.effective_chat.id
@@ -196,6 +322,10 @@ def build_app(cfg: Config) -> Application:
     app.add_handler(CommandHandler(["start", "help"], start))
     app.add_handler(CommandHandler("id", chat_id))
     app.add_handler(CommandHandler(["categories", "category"], categories))
+    app.add_handler(CommandHandler(["watch", "w"], watch))
+    app.add_handler(CommandHandler(["unwatch", "uw"], unwatch))
+    app.add_handler(CommandHandler(["watches", "keywords"], watches))
+    app.add_handler(CommandHandler("slr", slr_now))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     # /test, /dry, /raw 는 명령어 형태지만 글쓰기 요청이다

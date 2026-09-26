@@ -71,6 +71,14 @@ class Config:
     # 카테고리 목록을 직접 지정할 때 (쉼표 구분). 비우면 블로그에서 자동으로 불러옴
     naver_categories: list[str] = field(default_factory=list)
 
+    # SLR클럽 장터 새 글 알림 (키워드는 텔레그램 /watch 로 등록 → data/slr_watch.json)
+    slr_watch: bool = True
+    slr_board_url: str = ""  # 비우면 회원장터 > 팝니다
+    slr_interval: int = 60  # 확인 간격(초)
+    slr_id: str = ""  # 목록이 로그인해야 보일 때만
+    slr_pw: str = ""
+    slr_watch_file: Path = DATA / "slr_watch.json"
+
     @classmethod
     def load(cls, env_file: str | None = None) -> "Config":
         load_dotenv(env_file or ROOT / ".env", override=True)
@@ -97,4 +105,9 @@ class Config:
             font_path=os.getenv("FONT_PATH", "").strip() or None,
             auto_category=_bool("AUTO_CATEGORY", True),
             naver_categories=[c.strip() for c in os.getenv("NAVER_CATEGORIES", "").split(",") if c.strip()],
+            slr_watch=_bool("SLR_WATCH", True),
+            slr_board_url=os.getenv("SLR_BOARD_URL", "").strip(),
+            slr_interval=max(30, _int("SLR_INTERVAL", 60)),
+            slr_id=os.getenv("SLR_ID", "").strip(),
+            slr_pw=os.getenv("SLR_PW", ""),
         )
