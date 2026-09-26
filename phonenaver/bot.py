@@ -11,8 +11,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 from . import html_utils, images
 from .config import Config
-from .naver import NaverError
-from .pipeline import Pipeline
+from .jobs import JobRunner
+from .naver import NaverBlog, NaverError, NotLoggedIn
 
 log = logging.getLogger(__name__)
 
@@ -48,28 +48,23 @@ HELP = """📝 네이버 블로그 자동 글쓰기 봇
 
 · 앞에 /test 를 붙이면 저장하지 않고 미리보기만 보냅니다.
 · 말투·분량·대상도 자유롭게 지시하세요. (예: 1500자, 반말, 초보자용)
-· /id 채팅 ID 확인"""
+· /id 채팅 ID 확인
+· 진행 상황과 기록은 PC 대시보드(npm start)에서도 볼 수 있어요."""
 
 
-def build_app(cfg: Config) -> Application:
+def build_app(get_cfg, runner: JobRunner) -> Application:
+    cfg = get_cfg()
     if not cfg.telegram_bot_token:
-        raise SystemExit("TELEGRAM_BOT_TOKEN 이 없습니다 (.env 확인)")
-    pipeline = Pipeline(cfg)
+        raise RuntimeError("텔레그램 봇 토큰이 없습니다")
     upload_dir = cfg.image_dir / "uploads"
     app = Application.builder().token(cfg.telegram_bot_token).build()
-    locks: dict = {}  # 글은 한 번에 하나씩 처리 (Lock 은 봇 루프 안에서 처음 쓸 때 생성 - 파이썬 3.9 호환)
-
-    def job_lock() -> asyncio.Lock:
-        if "job" not in locks:
-            locks["job"] = asyncio.Lock()
-        return locks["job"]
 
     def allowed(update: Update) -> bool:
-        return bool(update.effective_chat) and update.effective_chat.id in cfg.allowed_chat_ids
+        return bool(update.effective_chat) and update.effective_chat.id in get_cfg().allowed_chat_ids
 
     async def deny(update: Update) -> None:
         await update.effective_message.reply_text(
-            f"⛔ 허용되지 않은 채팅입니다 (ID {update.effective_chat.id}). .env 의 ALLOWED_CHAT_IDS 에 넣고 봇을 재시작하세요."
+            f"⛔ 등록되지 않은 채팅입니다 (ID {update.effective_chat.id}). PC 대시보드의 [휴대폰 연결] 을 눌러 등록하세요."
         )
 
     async def start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -83,44 +78,53 @@ def build_app(cfg: Config) -> Application:
     async def categories(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         if not allowed(update):
             return await deny(update)
-        if pipeline.naver is None:
-            await update.message.reply_text("NAVER_BLOG_ID 가 설정되지 않았습니다.")
+        c = get_cfg()
+        if not c.naver_blog_id:
+            await update.message.reply_text("블로그 아이디가 없습니다. PC 대시보드에서 네이버 로그인을 먼저 해 주세요.")
             return
         msg = await update.message.reply_text("📂 카테고리 불러오는 중...")
         try:
-            cats = await pipeline.naver.categories(refresh=True)
+            cats = await NaverBlog(c, runner.session).categories(refresh=True)
         except Exception as exc:
             await msg.edit_text(f"❌ 카테고리를 불러오지 못했습니다: {exc}")
             return
         if not cats:
-            await msg.edit_text("카테고리를 찾지 못했습니다. .env 의 NAVER_CATEGORIES 에 직접 적어 주세요.")
+            await msg.edit_text("카테고리를 찾지 못했습니다.")
             return
-        await msg.edit_text("📂 내 블로그 카테고리\n" + "\n".join(f"· {c.label}" for c in cats))
+        await msg.edit_text("📂 내 블로그 카테고리\n" + "\n".join(f"· {x.label}" for x in cats))
 
     async def process(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, photos: list[Path]) -> None:
         chat = update.effective_chat.id
-        status = await context.bot.send_message(chat, "🚀 작업을 시작합니다..." + (f" (내 사진 {len(photos)}장)" if photos else ""))
+        waiting = sum(1 for j in runner.jobs.values() if j.status in ("queued", "running"))
+        first = "🚀 작업을 시작합니다..." if not waiting else f"⏳ 앞에 작업 {waiting}개가 있어요. 차례가 되면 시작합니다."
+        status = await context.bot.send_message(chat, first + (f" (내 사진 {len(photos)}장)" if photos else ""))
 
         async def progress(msg: str) -> None:
-            await context.bot.send_chat_action(chat, ChatAction.TYPING)
             try:
+                await context.bot.send_chat_action(chat, ChatAction.TYPING)
                 await status.edit_text(msg)
             except Exception:
                 pass
 
-        async with job_lock():
-            try:
-                result = await pipeline.run(text, progress, photos=photos)
-            except NaverError as exc:
-                await status.edit_text(f"❌ {exc}")
-                if exc.screenshot:
-                    with open(exc.screenshot, "rb") as f:
-                        await context.bot.send_photo(chat, f, caption="오류 당시 화면")
-                return
-            except Exception as exc:  # 휴대폰에 원인을 바로 알려준다
-                log.exception("작업 실패")
-                await status.edit_text(f"❌ 실패: {exc}")
-                return
+        job = runner.submit(text, photos, source="phone", progress=progress, want_result=True)
+        try:
+            result = await runner.wait(job)
+        except NotLoggedIn:
+            await status.edit_text("🔒 네이버 로그인이 풀렸습니다. PC 대시보드에서 [네이버 로그인 창 열기] 로 한 번 로그인한 뒤, "
+                                   "대시보드 작업표의 [다시] 를 누르거나 이 메시지를 다시 보내 주세요.")
+            return
+        except NaverError as exc:
+            await status.edit_text(f"❌ {exc}")
+            if exc.screenshot:
+                with open(exc.screenshot, "rb") as f:
+                    await context.bot.send_photo(chat, f, caption="오류 당시 화면")
+            return
+        except asyncio.CancelledError:
+            await status.edit_text("취소되었습니다.")
+            return
+        except Exception as exc:
+            await status.edit_text(f"❌ 실패: {exc}")
+            return
 
         plain = images.strip_markers(html_utils.html_to_text(result.body_html))
         lines = [f"✅ {'미리보기 (저장 안 함)' if result.command.dry_run else '임시저장 완료'}",
@@ -155,11 +159,15 @@ def build_app(cfg: Config) -> Application:
             with open(result.draft.screenshot, "rb") as f:
                 await context.bot.send_photo(chat, f, caption="네이버 앱 > 글쓰기 > 임시저장 글에서 확인·발행하세요")
 
+    def spawn(coro) -> None:
+        # 글 하나가 끝날 때까지 봇이 다른 메시지를 못 받는 일이 없도록 따로 실행
+        app.create_task(coro)
+
     async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not allowed(update):
             return await deny(update)
         photos = context.chat_data.pop("photos", [])  # 먼저 보내 둔 사진이 있으면 함께 사용
-        await process(update, context, update.message.text or "", photos)
+        spawn(process(update, context, update.message.text or "", photos))
 
     async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """사진(앨범 포함)을 받아 모은다. 앨범은 여러 메시지로 나눠 오므로 잠시 기다렸다 한 번에 처리."""
@@ -203,10 +211,53 @@ def build_app(cfg: Config) -> Application:
     return app
 
 
-def run_bot(cfg: Config) -> None:
-    # 메뉴에서 봇을 껐다 다시 켤 수 있도록 매번 새 이벤트 루프 사용.
-    # (파이썬 3.9 는 봇을 만들 때 루프가 있어야 하므로 build_app 보다 먼저)
-    asyncio.set_event_loop(asyncio.new_event_loop())
-    app = build_app(cfg)
-    log.info("텔레그램 봇 시작")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+class TelegramBot:
+    """대시보드에서 켜고 끄는 텔레그램 봇 (대시보드와 같은 이벤트 루프에서 돈다)."""
+
+    def __init__(self, get_cfg, runner: JobRunner):
+        self.get_cfg = get_cfg
+        self.runner = runner
+        self.app: Application | None = None
+        self.username = ""
+        self.error = ""
+
+    @property
+    def running(self) -> bool:
+        return self.app is not None
+
+    async def start(self) -> None:
+        if self.app is not None:
+            return
+        self.error = ""
+        try:
+            app = build_app(self.get_cfg, self.runner)
+            await app.initialize()
+            await app.start()
+            await app.updater.start_polling(drop_pending_updates=False)
+            self.username = app.bot.username or ""
+            self.app = app
+            log.info("🤖 텔레그램 봇 켜짐 (@%s) — 휴대폰으로 지시를 보내세요.", self.username)
+        except Exception as exc:
+            self.error = str(exc)
+            log.error("텔레그램 봇을 켜지 못했습니다: %s", exc)
+
+    async def stop(self) -> None:
+        app, self.app = self.app, None
+        if app is None:
+            return
+        for step in (app.updater.stop, app.stop, app.shutdown):
+            try:
+                await step()
+            except Exception:
+                pass
+        log.info("텔레그램 봇 꺼짐")
+
+    def status(self) -> dict:
+        cfg = self.get_cfg()
+        return {
+            "running": self.running,
+            "username": self.username,
+            "hasToken": bool(cfg.telegram_bot_token),
+            "chatIds": sorted(cfg.allowed_chat_ids),
+            "error": self.error,
+        }

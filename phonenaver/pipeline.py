@@ -14,6 +14,7 @@ from .ai import BlogPost, PhotoAnalysis, Research, Writer
 from .command import Command, parse
 from .config import Config
 from .fetcher import Page, fetch
+from .browser import BrowserSession
 from .naver import Category, DraftResult, NaverBlog, match_category
 
 log = logging.getLogger(__name__)
@@ -42,10 +43,16 @@ class Result:
 
 
 class Pipeline:
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, session: BrowserSession | None = None):
         self.cfg = cfg
         self.writer: Writer | None = None
-        self.naver = NaverBlog(cfg) if cfg.naver_blog_id else None
+        self.session = session
+        self.naver = NaverBlog(cfg, session) if cfg.naver_blog_id else None
+
+    async def close(self) -> None:
+        """이 파이프라인이 직접 띄운 브라우저만 닫는다 (공유 브라우저는 앱이 관리)."""
+        if self.session is None and self.naver is not None:
+            await self.naver.session.close()
 
     def _writer(self) -> Writer:
         if self.writer is None:
@@ -151,8 +158,18 @@ class Pipeline:
             photo_analysis=photo_analysis, photos_received=len(photos), photos_attached=len(attach),
         )
 
-    async def run(self, text: str, progress: Progress = _silent, photos: list[Path] | None = None) -> Result:
+    async def run(
+        self,
+        text: str,
+        progress: Progress = _silent,
+        photos: list[Path] | None = None,
+        photo_mode: str | None = None,
+    ) -> Result:
         cmd = parse(text)
+        if photo_mode in ("attach", "analyze"):  # 대시보드에서 버튼으로 고른 경우
+            cmd.photo_mode = photo_mode
+        if not cmd.dry_run and self.naver is not None:
+            await self.naver.ensure_login()
         result = await self.generate(cmd, photos, progress)
         if cmd.dry_run:
             return result

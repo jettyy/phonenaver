@@ -1,8 +1,8 @@
 """Playwright 로 네이버 블로그 스마트에디터 ONE 을 열어 글을 붙여넣고 임시저장한다.
 
 네이버는 글쓰기(임시저장) 공개 API 가 없어서 실제 브라우저를 조작한다.
-로그인은 캡차/보안 때문에 자동으로 하지 않고, 한 번 직접 로그인한 세션(쿠키)을
-BROWSER_PROFILE_DIR 에 저장해 계속 재사용한다.
+브라우저와 로그인 세션은 browser.BrowserSession 이 계속 열어 두고 관리한다.
+(로그인은 사람이 창에서 한 번만 직접 한다. 프로그램이 아이디/비밀번호를 치지 않는다.)
 
 에디터 화면 구조가 바뀌면 아래 SELECTORS 만 고치면 된다.
 """
@@ -17,9 +17,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from playwright.async_api import BrowserContext, Frame, Page, async_playwright
+from playwright.async_api import BrowserContext, Frame, Page
 from playwright.async_api import TimeoutError as PWTimeout
 
+from .browser import LOGIN_HOST, NOT_LOGGED_IN, BrowserSession
 from .config import Config
 from .html_utils import html_to_text
 from .images import marker
@@ -55,22 +56,6 @@ SELECTORS = {
         "button:has(span:text-is('저장'))"
     ),
 }
-
-LOGIN_HOST = "nid.naver.com"
-LOGIN_URL = "https://nid.naver.com/nidlogin.login?mode=form&url=https%3A%2F%2Fblog.naver.com%2F"
-LOGIN_SELECTORS = {
-    "id": "#id",
-    "pw": "#pw",
-    "keep": "#keep, #stay",
-    "keep_label": "label[for='keep'], label[for='stay'], .keep_check",
-    "submit": (
-        "#log\\.login, button.btn_login, button[type='submit'], input[type='submit'], "
-        "button:has-text('로그인'), a:has-text('로그인'):not([href*='http'])"
-    ),
-    # 로그인 후 '새로운 기기 등록' 화면
-    "new_device_save": "#new\\.save, a:has-text('등록')",
-}
-
 
 class NaverError(RuntimeError):
     def __init__(self, message: str, screenshot: Path | None = None):
@@ -169,60 +154,8 @@ def match_category(name: str | None, categories: list[Category]) -> Category | N
     return None
 
 
-def _launch_args(cfg: Config, headless: bool) -> dict:
-    args: dict = {
-        "user_data_dir": str(cfg.browser_profile_dir),
-        "headless": headless,
-        "locale": "ko-KR",
-        "timezone_id": "Asia/Seoul",
-        "viewport": {"width": 1400, "height": 1000},
-        "args": ["--disable-blink-features=AutomationControlled"],
-    }
-    if cfg.browser_executable:
-        args["executable_path"] = cfg.browser_executable
-    return args
-
-
-async def _open(pw, cfg: Config, headless: bool) -> BrowserContext:
-    cfg.browser_profile_dir.mkdir(parents=True, exist_ok=True)
-    ctx = await pw.chromium.launch_persistent_context(**_launch_args(cfg, headless))
-    await ctx.grant_permissions(["clipboard-read", "clipboard-write"])
-    return ctx
-
-
-# ── 로그인 관리 ───────────────────────────────────────────────
-
-async def interactive_login(cfg: Config, timeout_s: int = 300) -> bool:
-    """브라우저 창을 띄워 사용자가 직접 로그인하게 한다 (PC 에서 1회)."""
-    async with async_playwright() as pw:
-        ctx = await _open(pw, cfg, headless=False)
-        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-        await page.goto(LOGIN_URL)
-        if cfg.naver_id and cfg.naver_pw:
-            print(".env 의 아이디/비밀번호로 로그인합니다. 캡차나 2단계 인증이 나오면 창에서 직접 처리하세요.")
-            try:
-                await auto_login(page, cfg, wait_s=timeout_s)
-            except Exception as exc:  # 자동 입력이 막혀도 창에서 직접 로그인할 수 있게 계속 대기
-                print(f"자동 로그인이 끝나지 않았습니다({type(exc).__name__}). 창에서 직접 로그인을 마무리하세요.")
-        else:
-            print(f"브라우저 창에서 네이버에 로그인하세요. ({timeout_s}초 대기, '로그인 상태 유지' 체크 추천)")
-        for _ in range(timeout_s):
-            if await _has_login_cookie(ctx):
-                print("로그인 확인! 세션을 저장했습니다.")
-                await asyncio.sleep(2)
-                await ctx.close()
-                return True
-            await asyncio.sleep(1)
-        await ctx.close()
-        return False
-
-
-async def import_cookies(cfg: Config, cookie_file: Path) -> int:
-    """PC 브라우저에서 내보낸 쿠키(JSON)를 서버 브라우저 프로필에 넣는다.
-
-    'Cookie-Editor' / 'EditThisCookie' 확장 프로그램의 JSON 내보내기 형식을 지원한다.
-    """
-    raw = json.loads(Path(cookie_file).read_text(encoding="utf-8"))
+def parse_exported_cookies(raw: list[dict]) -> list[dict]:
+    """'Cookie-Editor' / 'EditThisCookie' 확장 프로그램으로 내보낸 쿠키(JSON)를 Playwright 형식으로."""
     cookies = []
     for c in raw:
         domain = c.get("domain", "")
@@ -246,104 +179,29 @@ async def import_cookies(cfg: Config, cookie_file: Path) -> int:
         cookies.append(cookie)
     if not cookies:
         raise ValueError("naver.com 쿠키가 없습니다. 네이버에 로그인한 상태에서 내보냈는지 확인하세요.")
-    async with async_playwright() as pw:
-        ctx = await _open(pw, cfg, headless=True)
-        await ctx.add_cookies(cookies)
-        await ctx.close()
-    return len(cookies)
-
-
-async def _has_login_cookie(ctx: BrowserContext) -> bool:
-    cookies = await ctx.cookies("https://naver.com")
-    return any(c["name"] == "NID_AUT" for c in cookies)
-
-
-async def _paste_into(page: Page, selector: str, value: str) -> None:
-    """아이디/비밀번호를 한 글자씩 치지 않고 붙여넣는다 (자동입력 방지 캡차를 덜 부름)."""
-    field_el = page.locator(selector).first
-    await field_el.click()
-    try:
-        await page.evaluate("v => navigator.clipboard.writeText(v)", value)
-        await page.keyboard.press("ControlOrMeta+V")
-        await asyncio.sleep(0.3)
-    except Exception:
-        pass
-    if await field_el.input_value() != value:
-        await field_el.fill(value)
-    await page.evaluate("() => navigator.clipboard.writeText('')")  # 클립보드에 비밀번호 남기지 않기
-
-
-async def auto_login(page: Page, cfg: Config, wait_s: int = 90) -> None:
-    """NAVER_ID / NAVER_PW 로 로그인. 캡차·2단계 인증이 뜨면 wait_s 동안 기다린다(네이버 앱 승인 등)."""
-    if not (cfg.naver_id and cfg.naver_pw):
-        raise NotLoggedIn(
-            "네이버 로그인이 필요합니다. .env 에 NAVER_ID / NAVER_PW 를 넣거나 "
-            "`python -m phonenaver login` 으로 한 번 로그인하세요."
-        )
-    ctx = page.context
-    log.info("네이버 자동 로그인 시도")
-    await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-    await _paste_into(page, LOGIN_SELECTORS["id"], cfg.naver_id)
-    await _paste_into(page, LOGIN_SELECTORS["pw"], cfg.naver_pw)
-    try:  # 로그인 상태 유지
-        keep = page.locator(LOGIN_SELECTORS["keep"]).first
-        if await keep.count() and not await keep.is_checked():
-            await page.locator(LOGIN_SELECTORS["keep_label"]).first.click()
-    except Exception:
-        pass
-    # 로그인 버튼 (화면이 바뀌어 버튼을 못 찾으면 비밀번호 칸에서 Enter)
-    submit = page.locator(LOGIN_SELECTORS["submit"]).first
-    try:
-        await submit.click(timeout=5000)
-    except PWTimeout:
-        log.info("로그인 버튼을 찾지 못해 Enter 로 제출")
-        await page.locator(LOGIN_SELECTORS["pw"]).first.press("Enter")
-
-    for _ in range(wait_s):
-        await asyncio.sleep(1)
-        if await _has_login_cookie(ctx) and LOGIN_HOST not in page.url:
-            log.info("네이버 로그인 성공")
-            return
-        try:
-            new_device = page.locator(LOGIN_SELECTORS["new_device_save"])
-            if LOGIN_HOST in page.url and await new_device.count() and await new_device.first.is_visible():
-                await new_device.first.click()
-        except Exception:
-            pass
-        if await _has_login_cookie(ctx):
-            return
-    raise NotLoggedIn(
-        "네이버 자동 로그인에 실패했습니다. 아이디/비밀번호를 확인하거나, 캡차·2단계 인증이 뜬 경우 "
-        "PC에서 `python -m phonenaver login` 으로 한 번 직접 로그인하세요. (네이버 앱 로그인 승인 요청이 오면 승인)"
-    )
-
-
-async def check_login(cfg: Config) -> bool:
-    async with async_playwright() as pw:
-        ctx = await _open(pw, cfg, headless=True)
-        try:
-            return await _has_login_cookie(ctx)
-        finally:
-            await ctx.close()
+    return cookies
 
 
 # ── 임시저장 ────────────────────────────────────────────────
 
 class NaverBlog:
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, session: BrowserSession | None = None):
         if not cfg.naver_blog_id:
-            raise NaverError("NAVER_BLOG_ID 가 설정되지 않았습니다 (.env 확인)")
+            raise NaverError("블로그 아이디가 설정되지 않았습니다. 대시보드에서 네이버 로그인을 하면 자동으로 채워집니다.")
         self.cfg = cfg
-        # 브라우저 프로필은 동시에 하나만 열 수 있음. 파이썬 3.9 는 Lock 을 이벤트 루프 안에서
-        # 만들어야 해서, 실행 중인 루프마다 처음 쓸 때 만든다.
-        self._lock: asyncio.Lock | None = None
-        self._lock_loop = None
+        self.session = session or BrowserSession(cfg)
 
-    def _get_lock(self) -> asyncio.Lock:
-        loop = asyncio.get_running_loop()
-        if self._lock is None or self._lock_loop is not loop:
-            self._lock, self._lock_loop = asyncio.Lock(), loop
-        return self._lock
+    async def ensure_login(self) -> None:
+        """글을 쓰기 전에 로그인부터 확인 (로그인이 풀렸는데 AI 사용량만 쓰는 일을 막는다)."""
+        async with self.session.lock():
+            await self._logged_in_context()
+
+    async def _logged_in_context(self) -> BrowserContext:
+        ctx = await self.session.context()
+        if not await self.session.has_login(ctx):
+            self.session.write_session(loggedIn=False)
+            raise NotLoggedIn(NOT_LOGGED_IN)
+        return ctx
 
     # ── 카테고리 목록 ──
     @property
@@ -359,13 +217,8 @@ class NaverBlog:
             data = json.loads(cache.read_text(encoding="utf-8"))
             if time.time() - data.get("fetched", 0) < 86400 and data.get("items"):
                 return [Category(**c) for c in data["items"]]
-        async with self._get_lock():
-            async with async_playwright() as pw:
-                ctx = await _open(pw, self.cfg, headless=True)
-                try:
-                    items = await self._fetch_categories(ctx)
-                finally:
-                    await ctx.close()
+        async with self.session.lock():
+            items = await self._fetch_categories(await self._logged_in_context())
         if items:
             cache.parent.mkdir(parents=True, exist_ok=True)
             cache.write_text(
@@ -376,8 +229,6 @@ class NaverBlog:
 
     async def _fetch_categories(self, ctx: BrowserContext) -> list[Category]:
         blog_id = self.cfg.naver_blog_id
-        if not await _has_login_cookie(ctx):
-            await auto_login(ctx.pages[0] if ctx.pages else await ctx.new_page(), self.cfg)
         for url in (
             f"https://m.blog.naver.com/api/blogs/{blog_id}/category-list",
             f"https://blog.naver.com/WidgetListAsync.naver?blogId={blog_id}&listNumVisitor=1&isCategoryOpen=true",
@@ -392,21 +243,25 @@ class NaverBlog:
             except Exception as exc:  # 형식이 다르면 다음 방법으로
                 log.info("카테고리 API 실패 %s: %s", url, exc)
         # 마지막 수단: 에디터의 [발행] 레이어에서 카테고리 이름 읽기
-        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-        await page.goto(f"https://blog.naver.com/{blog_id}?Redirect=Write&", wait_until="domcontentloaded")
-        frame = await self._editor_frame(page)
-        await self._dismiss_popups(frame)
-        scope = await self._open_publish_layer(page, frame)
-        if scope is None:
-            return []
-        await scope.locator(SELECTORS["category_select"]).first.click()
-        await asyncio.sleep(0.8)
-        names: list[str] = []
-        for sel in SELECTORS["category_option"]:
-            names = [n.strip() for n in await scope.locator(sel).all_inner_texts()]
-            if names:
-                break
-        return [Category(name=n) for n in dict.fromkeys(n for n in names if n)]
+        page = await ctx.new_page()
+        try:
+            await page.goto(f"https://blog.naver.com/{blog_id}?Redirect=Write&", wait_until="domcontentloaded")
+            frame = await self._editor_frame(page)
+            await self._dismiss_popups(frame)
+            scope = await self._open_publish_layer(page, frame)
+            if scope is None:
+                return []
+            await scope.locator(SELECTORS["category_select"]).first.click()
+            await asyncio.sleep(0.8)
+            names: list[str] = []
+            for sel in SELECTORS["category_option"]:
+                names = [n.strip() for n in await scope.locator(sel).all_inner_texts()]
+                if names:
+                    break
+            await self._close_publish_layer(page, scope)
+            return [Category(name=n) for n in dict.fromkeys(n for n in names if n)]
+        finally:
+            await page.close()
 
     # ── 임시저장 ──
     async def save_draft(
@@ -416,20 +271,21 @@ class NaverBlog:
         images: list[Path] | None = None,
         category: Category | None = None,
     ) -> DraftResult:
-        async with self._get_lock():
-            async with async_playwright() as pw:
-                ctx = await _open(pw, self.cfg, headless=self.cfg.headless)
-                page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-                try:
-                    return await self._save(page, title, body_html, images or [], category)
-                except NaverError as exc:
-                    if exc.screenshot is None:
-                        exc.screenshot = await self._shot(page, "error")
-                    raise
-                except Exception as exc:
-                    raise NaverError(f"임시저장 중 오류: {exc}", await self._shot(page, "error")) from exc
-                finally:
-                    await ctx.close()
+        async with self.session.lock():
+            ctx = await self._logged_in_context()
+            page = await ctx.new_page()  # 브라우저는 계속 열어 두고 탭만 열고 닫는다
+            try:
+                result = await self._save(page, title, body_html, images or [], category)
+                await self.session.save_cookies()  # 네이버가 갱신한 쿠키를 다시 보관
+                return result
+            except NaverError as exc:
+                if exc.screenshot is None:
+                    exc.screenshot = await self._shot(page, "error")
+                raise
+            except Exception as exc:
+                raise NaverError(f"임시저장 중 오류: {exc}", await self._shot(page, "error")) from exc
+            finally:
+                await page.close()
 
     async def _save(
         self, page: Page, title: str, body_html: str, images: list[Path], category: Category | None
@@ -437,12 +293,10 @@ class NaverBlog:
         url = f"https://blog.naver.com/{self.cfg.naver_blog_id}?Redirect=Write&"
         if category and category.no:
             url += f"categoryNo={category.no}"  # 카테고리를 미리 선택한 채로 에디터 열기
-        if not await _has_login_cookie(page.context):
-            await auto_login(page, self.cfg)
         await page.goto(url, wait_until="domcontentloaded")
-        if LOGIN_HOST in page.url:  # 쿠키가 만료된 경우
-            await auto_login(page, self.cfg)
-            await page.goto(url, wait_until="domcontentloaded")
+        if LOGIN_HOST in page.url:  # 세션이 만료된 경우: 자동으로 다시 로그인하지 않는다 (차단 방지)
+            self.session.write_session(loggedIn=False)
+            raise NotLoggedIn(NOT_LOGGED_IN)
 
         frame = await self._editor_frame(page)
         await self._dismiss_popups(frame)
@@ -584,7 +438,7 @@ class NaverBlog:
         deadline = asyncio.get_running_loop().time() + 40
         while asyncio.get_running_loop().time() < deadline:
             if LOGIN_HOST in page.url:
-                raise NotLoggedIn("네이버 로그인이 필요합니다. PC에서 `python -m phonenaver login` 을 실행하세요.")
+                raise NotLoggedIn(NOT_LOGGED_IN)
             candidates: list[Frame | Page] = [page]
             frame = page.frame(name="mainFrame")
             if frame:

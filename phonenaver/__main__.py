@@ -1,8 +1,7 @@
 """사용법: python -m phonenaver <명령>
 
-  menu                설정 마법사 + 메뉴 (start.command / start.bat 이 실행)
-  bot                 텔레그램 봇 실행 (휴대폰 지시 대기)
-  login               브라우저 창을 띄워 네이버에 직접 로그인 (최초 1회, PC)
+  app (기본)          대시보드 + 텔레그램 봇 실행 — `npm start` 가 이것을 실행
+  login               브라우저 창을 띄워 네이버에 직접 로그인
   import-cookies F    PC에서 내보낸 쿠키 JSON 을 서버 프로필에 넣기
   check               로그인 세션 확인
   categories          내 블로그 카테고리 목록 새로고침
@@ -22,9 +21,11 @@ from .config import Config
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="phonenaver", description="네이버 블로그 자동 글쓰기")
     parser.add_argument("--env", default=None, help=".env 파일 경로 (기본: 프로그램 폴더의 .env)")
-    sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("menu")
-    sub.add_parser("bot")
+    sub = parser.add_subparsers(dest="cmd")
+    p_app = sub.add_parser("app")
+    p_app.add_argument("--port", type=int, default=0)
+    p_app.add_argument("--no-open", action="store_true", help="브라우저 탭을 자동으로 열지 않기")
+    sub.add_parser("bot")  # 예전 이름 (app 과 같음)
     sub.add_parser("login")
     sub.add_parser("check")
     sub.add_parser("categories")
@@ -36,34 +37,44 @@ def main(argv: list[str] | None = None) -> int:
     p_write.add_argument("--photo", type=Path, action="append", default=[], help="글에 넣을 내 사진 (여러 번 가능)")
     args = parser.parse_args(argv)
 
+    if args.cmd in (None, "app", "bot"):
+        from .web import serve
+
+        serve(port=getattr(args, "port", 0), open_browser=not getattr(args, "no_open", False))
+        return 0
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     cfg = Config.load(args.env)
 
-    if args.cmd == "menu":
-        from .menu import main as menu_main
-
-        return menu_main()
-    if args.cmd == "bot":
-        from .bot import run_bot
-
-        run_bot(cfg)
-        return 0
-
     from . import naver
 
+    from .browser import BrowserSession
+
+    async def with_session(fn):
+        session = BrowserSession(cfg)
+        try:
+            return await fn(session)
+        finally:
+            await session.close()
+
     if args.cmd == "login":
-        return 0 if asyncio.run(naver.interactive_login(cfg)) else 1
+        info = asyncio.run(with_session(lambda s: s.open_login_window()))
+        print("로그인 완료 ✅" if info.get("loggedIn") else "로그인되지 않았습니다 ❌")
+        return 0 if info.get("loggedIn") else 1
     if args.cmd == "check":
-        ok = asyncio.run(naver.check_login(cfg))
-        print("로그인 되어 있음 ✅" if ok else "로그인 필요 ❌  (python -m phonenaver login)")
-        return 0 if ok else 1
+        info = asyncio.run(with_session(lambda s: s.verify()))
+        print("로그인 되어 있음 ✅" if info.get("loggedIn") else "로그인 필요 ❌  (npm start → [네이버 로그인 창 열기])")
+        return 0 if info.get("loggedIn") else 1
     if args.cmd == "import-cookies":
-        n = asyncio.run(naver.import_cookies(cfg, args.file))
-        print(f"쿠키 {n}개를 저장했습니다.")
+        import json
+
+        cookies = naver.parse_exported_cookies(json.loads(args.file.read_text(encoding="utf-8")))
+        asyncio.run(with_session(lambda s: s.import_cookie_list(cookies)))
+        print(f"쿠키 {len(cookies)}개를 저장했습니다.")
         return 0
     if args.cmd == "categories":
-        cats = asyncio.run(naver.NaverBlog(cfg).categories(refresh=True))
+        cats = asyncio.run(with_session(lambda s: naver.NaverBlog(cfg, s).categories(refresh=True)))
         print("\n".join(f"- {c.label} (번호 {c.no})" for c in cats) or "카테고리를 찾지 못했습니다.")
         return 0 if cats else 1
     if args.cmd == "write":
@@ -74,7 +85,14 @@ def main(argv: list[str] | None = None) -> int:
             print(msg)
 
         text = ("/test " + args.text) if args.dry else args.text
-        result = asyncio.run(Pipeline(cfg).run(text, progress, photos=args.photo))
+        async def write_once():
+            pipe = Pipeline(cfg)
+            try:
+                return await pipe.run(text, progress, photos=args.photo)
+            finally:
+                await pipe.close()
+
+        result = asyncio.run(write_once())
         print("\n제목:", result.post.title)
         print("카테고리:", result.category.label if result.category else "기본")
         for img in result.images:

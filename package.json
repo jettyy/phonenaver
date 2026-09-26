@@ -1,0 +1,14 @@
+{
+  "name": "phonenaver",
+  "version": "0.3.0",
+  "private": true,
+  "description": "휴대폰(텔레그램)이나 대시보드로 지시하면 글을 써서 네이버 블로그에 임시저장합니다. (실행은 파이썬, npm 은 설치·실행 명령만 제공)",
+  "scripts": {
+    "postinstall": "node scripts/run.js setup",
+    "setup": "node scripts/run.js setup",
+    "start": "node scripts/run.js start"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

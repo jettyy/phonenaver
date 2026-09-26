@@ -50,9 +50,6 @@ class Config:
     allowed_chat_ids: set[int] = field(default_factory=set)
 
     naver_blog_id: str = ""
-    # 네이버 아이디/비밀번호: 로그인이 풀리면 자동으로 다시 로그인
-    naver_id: str = ""
-    naver_pw: str = ""
     headless: bool = True
     browser_profile_dir: Path = DATA / "browser"
     browser_executable: str | None = None
@@ -73,7 +70,7 @@ class Config:
 
     @classmethod
     def load(cls, env_file: str | None = None) -> "Config":
-        load_dotenv(env_file or ROOT / ".env", override=True)
+        load_dotenv(env_file or ENV_FILE, override=True)
         return cls(
             claude_bin=os.getenv("CLAUDE_BIN", "").strip() or "claude",
             claude_oauth_token=os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip(),
@@ -84,8 +81,6 @@ class Config:
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
             allowed_chat_ids=_ids("ALLOWED_CHAT_IDS"),
             naver_blog_id=os.getenv("NAVER_BLOG_ID", "").strip(),
-            naver_id=os.getenv("NAVER_ID", "").strip(),
-            naver_pw=os.getenv("NAVER_PW", ""),
             headless=_bool("HEADLESS", True),
             browser_profile_dir=_path("BROWSER_PROFILE_DIR", DATA / "browser"),
             browser_executable=os.getenv("BROWSER_EXECUTABLE", "").strip() or None,
@@ -98,3 +93,28 @@ class Config:
             auto_category=_bool("AUTO_CATEGORY", True),
             naver_categories=[c.strip() for c in os.getenv("NAVER_CATEGORIES", "").split(",") if c.strip()],
         )
+
+
+ENV_FILE = ROOT / ".env"
+ENV_EXAMPLE = ROOT / ".env.example"
+
+
+def ensure_env_file() -> None:
+    if not ENV_FILE.exists():
+        ENV_FILE.write_text(ENV_EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def set_env(key: str, value: str, env_file: Path | None = None) -> None:
+    """.env 의 해당 줄만 바꾼다 (주석·다른 값은 유지)."""
+    path = env_file or ENV_FILE
+    if path == ENV_FILE:
+        ensure_env_file()
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    value = str(value).replace("\n", " ").strip()
+    for i, line in enumerate(lines):
+        if line.strip().startswith(key + "="):
+            lines[i] = f"{key}={value}"
+            break
+    else:
+        lines.append(f"{key}={value}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -1,12 +1,12 @@
 """phonenaver 시작 프로그램 (맥·윈도우 공용).
 
-start.command(맥) / start.bat(윈도우)을 더블클릭하면 이 파일이 실행된다.
-처음 실행할 때 필요한 것을 모두 자동으로 설치하고, 그다음에는 바로 메뉴를 띄운다.
+`npm install` → `python launcher.py setup`  : 필요한 것을 모두 설치 (처음 한 번, 업데이트 후)
+`npm start`   → `python launcher.py start`  : 대시보드 + 텔레그램 봇 실행
+(start.command / start.bat 더블클릭도 `start` 와 같다)
 
 - 파이썬 가상환경(.venv) 만들기 + 패키지 설치 (requirements.txt 가 바뀌면 자동 재설치)
 - 글쓰기용 브라우저(Chromium) 설치
 - Claude Code 설치 + 구독 계정 로그인 확인
-- 이후 `python -m phonenaver menu` 실행 (설정 마법사 / 봇 실행 메뉴)
 
 표준 라이브러리만 사용한다 (가상환경이 만들어지기 전에 실행되므로).
 """
@@ -139,14 +139,20 @@ def ensure_claude() -> None:
 
 def main() -> None:
     os.chdir(ROOT)
+    mode = sys.argv[1] if len(sys.argv) > 1 else "start"
     say("=" * 50)
-    say("  📝 네이버 블로그 자동 글쓰기 (phonenaver)")
+    say("  📝 폰네이버 — 네이버 블로그 자동 글쓰기")
     say("=" * 50)
     ensure_python_version()
     ensure_venv()
-    ensure_claude()
+    if mode == "setup":
+        ensure_claude()
+        say("✅ 준비 완료! 이제 `npm start` 로 실행하세요.")
+        return
+    if not find_claude():  # 실행할 때는 설치만 확인 (로그인은 대시보드에서도 할 수 있음)
+        ensure_claude()
     env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
-    code = subprocess.call([str(VPY), "-m", "phonenaver", "menu"], cwd=ROOT, env=env)
+    code = subprocess.call([str(VPY), "-m", "phonenaver", "app"], cwd=ROOT, env=env)
     sys.exit(code)
 
 
