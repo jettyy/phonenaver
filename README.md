@@ -44,30 +44,6 @@
 말투·분량·대상은 메시지에 같이 쓰면 됩니다. (예: `1500자로`, `초보자용으로`, `리스트 위주로`)
 링크만 주면 링크 내용만으로 쓰고, `최신`/`검색`/`찾아` 같은 말을 넣으면 웹 검색도 함께 합니다.
 
-## 🔔 SLR클럽 장터 새 글 알림
-
-봇이 켜져 있는 동안 [SLR클럽 회원장터 > 팝니다](https://www.slrclub.com/bbs/zboard.php?id=used_market&category=1)를
-1분마다 확인해서, **제목에 내 키워드가 들어간 새 글**이 올라오면 휴대폰 텔레그램으로 제목·작성자·시간과 **바로 열리는 링크**를 보내 줍니다.
-
-| 휴대폰에서 보내는 메시지 | 동작 |
-|---|---|
-| `/watch 소니 a7m5` | 키워드 등록 (쉼표로 여러 개: `/watch a7m5, 라이카 q2`). 등록하자마자 지금 목록에서 맞는 글도 보여 줌 |
-| `/watches` | 등록한 키워드 목록 |
-| `/unwatch 1` / `/unwatch 소니 a7m5` / `/unwatch all` | 번호·키워드로 삭제, 전부 삭제 |
-| `/slr` | 지금 첫 페이지에서 키워드에 맞는 글 바로 보기 |
-
-키워드 규칙 (대소문자·띄어쓰기 무시 — `a7m5` 로 등록하면 `A7M5`, `A7 M5` 모두 찾음)
-- `소니 a7m5` → 두 단어가 **모두** 들어간 제목
-- `a7m5|a7v` → **둘 중 하나**라도 들어간 제목
-- `라이카 -배터리` → '라이카'는 있고 '배터리'는 **없는** 제목
-
-- 처음 켰을 때는 이미 올라와 있던 글로 알림을 쏟아내지 않고, 그 이후 올라온 글만 알려 줍니다. 같은 글은 한 번만 알려 줍니다.
-- 확인 간격은 `.env` 의 `SLR_INTERVAL`(초, 기본 60 · 최소 30). 너무 짧게 하면 사이트에서 차단될 수 있어요.
-- 다른 게시판을 보려면 `SLR_BOARD_URL` 에 목록 주소를 넣으세요. 끄려면 `SLR_WATCH=false`.
-- 목록이 로그인해야 보이는 경우에만 `SLR_ID` / `SLR_PW` 를 넣으면 자동 로그인합니다.
-- PC 메뉴 `8` 에서도 키워드를 추가·삭제·테스트할 수 있고, 터미널에서는 `python -m phonenaver slr 소니 a7m5` 로 바로 확인할 수 있어요.
-- 확인이 5번 연속 실패하면 휴대폰으로 알려 주고, 다시 정상이 되면 또 알려 줍니다.
-
 ## 설치와 실행 — 맥·윈도우 똑같이 "더블클릭"
 
 ### 처음 한 번: 프로그램 받기
@@ -103,7 +79,6 @@ git clone -b claude/eloquent-mccarthy-3mz2z7 https://github.com/jettyy/phonenave
  5. 내 블로그 카테고리 보기
  6. Claude 로그인 다시 하기
  7. 최신 버전으로 업데이트
- 8. SLR클럽 장터 알림 키워드
  0. 종료
 ```
 
@@ -134,8 +109,7 @@ git clone -b claude/eloquent-mccarthy-3mz2z7 https://github.com/jettyy/phonenave
 | `phonenaver/html_utils.py` | 본문 HTML 정리(허용 태그만), 빠진 삽입 링크 보정 |
 | `phonenaver/naver.py` | Playwright: 자동 로그인 → 제목 입력 → 서식 있는 본문 붙여넣기 → 사진 업로드 → 카테고리 선택 → **저장** |
 | `phonenaver/pipeline.py` | 전체 흐름 |
-| `phonenaver/bot.py` | 텔레그램 봇 (+ SLR 장터 알림 백그라운드 확인) |
-| `phonenaver/slrwatch.py` | SLR클럽 장터 목록 읽기, 키워드 매칭, 새 글 판별 (`data/slr_watch.json`) |
+| `phonenaver/bot.py` | 텔레그램 봇 |
 
 ## 알아둘 점
 

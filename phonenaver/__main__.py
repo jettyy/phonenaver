@@ -7,7 +7,6 @@
   check               로그인 세션 확인
   categories          내 블로그 카테고리 목록 새로고침
   write "지시"         터미널에서 바로 글쓰기+임시저장 (--dry 미리보기, --photo 사진 첨부)
-  slr [키워드...]      SLR클럽 장터 첫 페이지에서 키워드에 맞는 글 보기 (키워드 없으면 등록한 키워드)
 """
 from __future__ import annotations
 
@@ -31,8 +30,6 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("categories")
     p_cookie = sub.add_parser("import-cookies")
     p_cookie.add_argument("file", type=Path)
-    p_slr = sub.add_parser("slr")
-    p_slr.add_argument("keywords", nargs="*")
     p_write = sub.add_parser("write")
     p_write.add_argument("text")
     p_write.add_argument("--dry", action="store_true", help="임시저장하지 않고 결과만 출력")
@@ -51,14 +48,6 @@ def main(argv: list[str] | None = None) -> int:
         from .bot import run_bot
 
         run_bot(cfg)
-        return 0
-
-    if args.cmd == "slr":
-        from . import slrwatch
-        from .menu import show_slr_matches
-
-        kws = args.keywords and [" ".join(args.keywords)]
-        show_slr_matches(cfg, kws or slrwatch.WatchStore(cfg.slr_watch_file).keywords)
         return 0
 
     from . import naver
