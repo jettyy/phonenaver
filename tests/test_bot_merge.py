@@ -34,12 +34,13 @@ def test_split_messages_become_one_request(monkeypatch):
     monkeypatch.setattr(bot, "MERGE_SECONDS", 0.2)
     cfg = Config(telegram_bot_token="1:x", allowed_chat_ids={7})
     runner = FakeRunner()
-    app = bot.build_app(lambda: cfg, runner)
-    text_handler = next(h for h in app.handlers[0]
-                        if isinstance(h, MessageHandler) and "TEXT" in repr(h.filters) and "COMMAND" in repr(h.filters))
-    photo_handler = next(h for h in app.handlers[0] if isinstance(h, MessageHandler) and "PHOTO" in repr(h.filters))
 
     async def scenario():
+        # 실제 프로그램처럼 이벤트 루프 안에서 봇을 만든다 (파이썬 3.9 는 루프 밖에서 만들 수 없음)
+        app = bot.build_app(lambda: cfg, runner)
+        text_handler = next(h for h in app.handlers[0]
+                            if isinstance(h, MessageHandler) and "TEXT" in repr(h.filters) and "COMMAND" in repr(h.filters))
+        photo_handler = next(h for h in app.handlers[0] if isinstance(h, MessageHandler) and "PHOTO" in repr(h.filters))
         ctx = SimpleNamespace(chat_data={}, bot=AsyncMock())
         # 텔레그램이 긴 글을 세 조각으로 나눠 보낸 상황
         for part in ("첫 부분 전세 월세 차이", "가운데 부분 대출 금리", "마지막 부분 결론"):
