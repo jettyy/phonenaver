@@ -350,11 +350,12 @@ function main() {
   watcher.onHit(({ post, keywords }) => console.log(`🔔 [${keywords.join(', ')}] ${post.title}\n   ${post.url}`));
   const bye = async () => {
     watcher.stop();
-    await watcher.browser?.close();
+    await watcher.browser?.closeAll();
     process.exit(0);
   };
   process.on('SIGINT', bye);
   process.on('SIGTERM', bye);
+  process.on('SIGHUP', bye); // 터미널 창을 닫았을 때도 크롬까지 정리
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
