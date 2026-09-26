@@ -134,3 +134,16 @@ def test_long_text_is_fully_analyzed(writer):
     research_call, write_call = _calls(writer)
     assert "[사용자가 보낸 글 전체]" in research_call["prompt"] and "마지막줄표시" in research_call["prompt"]
     assert "[긴 글 처리 규칙]" in write_call["prompt"] and "마지막줄표시" in write_call["prompt"]
+
+
+def test_model_is_always_sonnet(writer, monkeypatch):
+    monkeypatch.setenv("CLAUDE_MODEL", "opus")  # .env 에 다른 값이 있어도 무시
+    from phonenaver.config import Config
+
+    assert Config.load(env_file="/nonexistent").claude_model == "sonnet"
+    writer.research("x")
+    writer.write("글", None, [], [])
+    writer.analyze_photos([], "x")
+    for call in _calls(writer):
+        args = call["args"]
+        assert args[args.index("--model") + 1] == "sonnet"

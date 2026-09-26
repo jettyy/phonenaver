@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field, ValidationError
 
-from .config import Config
+from .config import CLAUDE_MODEL, Config
 from .fetcher import Page
 from .command import LONG_TEXT
 from .images import resize_for_ai
@@ -135,8 +135,7 @@ class Writer:
         ]
         if tools:
             cmd += ["--allowedTools", ",".join(tools)]
-        if self.cfg.claude_model:
-            cmd += ["--model", self.cfg.claude_model]
+        cmd += ["--model", CLAUDE_MODEL]  # 모델 고정 (sonnet)
         if system:
             cmd += ["--system-prompt", system]
         cmd += ["--add-dir", str(self.cfg.image_dir.resolve())]

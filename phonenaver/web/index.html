@@ -139,11 +139,8 @@
           <span class="sub" id="pexels-state">pexels.com/api 에서 무료 발급. 없으면 카드 이미지로 채웁니다</span>
         </label>
         <label>Claude 모델
-          <select id="s-CLAUDE_MODEL">
-            <option value="">계정 기본값</option>
-            <option value="opus">opus (가장 똑똑함)</option>
-            <option value="sonnet">sonnet (빠르고 사용량 적음)</option>
-          </select>
+          <input type="text" value="sonnet (고정)" disabled>
+          <span class="sub">사진 분석·검색·글 작성 모두 sonnet 으로만 씁니다</span>
         </label>
         <label>검색 횟수 상한
           <input id="s-MAX_SEARCHES" type="number" min="1" max="15">

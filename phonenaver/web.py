@@ -41,7 +41,6 @@ SETTINGS = {
     "INCLUDE_SOURCES": "bool",
     "AUTO_CATEGORY": "bool",
     "HEADLESS": "bool",
-    "CLAUDE_MODEL": "str",
     "MAX_SEARCHES": "int",
     "NAVER_BLOG_ID": "str",
 }
@@ -73,7 +72,7 @@ class State:
             "IMAGE_COUNT": cfg.image_count, "IMAGE_PER_SECTION": cfg.image_per_section, "MAX_IMAGES": cfg.max_images,
             "PARAGRAPH_GAP": cfg.paragraph_gap, "THUMBNAIL_CARD": cfg.thumbnail_card, "APPEND_HASHTAGS": cfg.append_hashtags,
             "INCLUDE_SOURCES": cfg.include_sources, "AUTO_CATEGORY": cfg.auto_category, "HEADLESS": cfg.headless,
-            "CLAUDE_MODEL": cfg.claude_model, "MAX_SEARCHES": cfg.max_searches, "NAVER_BLOG_ID": cfg.naver_blog_id,
+            "MAX_SEARCHES": cfg.max_searches, "NAVER_BLOG_ID": cfg.naver_blog_id,
         })
         return env
 

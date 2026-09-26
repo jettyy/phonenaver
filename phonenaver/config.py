@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 # 프로그램 폴더 (어디서 실행하든 이 폴더 기준으로 .env 와 data/ 를 사용)
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
+# 사진 분석·최신 정보 조사·글 작성 모두 이 모델로만 돌린다 (Claude Code CLI 의 모델 별칭)
+CLAUDE_MODEL = "sonnet"
 
 
 def _bool(name: str, default: bool) -> bool:
@@ -41,7 +43,8 @@ class Config:
     # Claude: 구독 계정(Pro/Max)으로 Claude Code CLI 를 실행
     claude_bin: str = "claude"
     claude_oauth_token: str = ""  # `claude setup-token` 으로 받은 토큰 (서버용, 비우면 로그인 정보 사용)
-    claude_model: str = ""  # 비우면 계정 기본 모델. opus / sonnet 등
+    # 글쓰기 모델은 sonnet 으로 고정 (.env 로 바꿀 수 없음)
+    claude_model: str = CLAUDE_MODEL
     claude_max_turns: int = 30
     claude_timeout: int = 900
     max_searches: int = 5
@@ -79,7 +82,6 @@ class Config:
         return cls(
             claude_bin=os.getenv("CLAUDE_BIN", "").strip() or "claude",
             claude_oauth_token=os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip(),
-            claude_model=os.getenv("CLAUDE_MODEL", "").strip(),
             claude_max_turns=_int("CLAUDE_MAX_TURNS", 30),
             claude_timeout=_int("CLAUDE_TIMEOUT", 900),
             max_searches=_int("MAX_SEARCHES", 5),
