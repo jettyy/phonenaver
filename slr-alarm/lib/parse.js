@@ -110,7 +110,7 @@ export function parseList(html, board = 'used_market') {
     $('a[href]').each((_, a) => {
       const href = $(a).attr('href');
       const m = NO_RE.exec(href);
-      if (!m || !href.includes('vx2.php') || !href.includes(`id=${board}`)) return;
+      if (!m || !href.includes(`id=${board}`)) return;
       const title = clean($(a).text());
       const no = Number(m[1]);
       if (title && !posts.has(no)) posts.set(no, { no, title, url: postUrl(board, no), author: '', date: '' });

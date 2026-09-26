@@ -104,8 +104,14 @@ function render() {
   else parts.push(`마지막 확인 ${time(status.lastCheck)}`);
   if (!settings.paused && active && status.nextCheck) parts.push(`다음 확인 ${time(status.nextCheck)}`);
   parts.push(`${status.interval}초마다`);
+  if (status.mode === 'browser') parts.push('크롬으로 읽는 중');
   $('status-line').innerHTML = esc(parts.join(' · '))
-    + (status.lastError ? ` <span class="err">⚠️ ${esc(status.lastError)}</span>` : '');
+    + (status.lastError ? ` <span class="err">⚠️ ${esc(status.lastError)}</span>` : '')
+    + (status.lastError && status.debugPage ? ' <a href="/debug/last-page" target="_blank">받아 온 화면 보기</a>' : '')
+    + (status.needLogin && !status.loginOpen ? ' <button class="btn small primary" data-login>SLR클럽 로그인 창 열기</button>' : '');
+  $('login-state').textContent = status.loginOpen ? '로그인 창이 열려 있습니다 — 로그인하고 창을 닫아 주세요'
+    : (status.mode === 'browser' && !status.lastError ? '크롬으로 목록을 읽고 있습니다 ✅' : '');
+  $('btn-login').disabled = status.loginOpen;
   $('btn-pause').textContent = settings.paused ? '다시 시작' : '일시정지';
   $('post-list').innerHTML = posts.length ? posts.map((p) => `
     <li class="${p.keywords.length ? 'hit' : ''}">
@@ -121,12 +127,10 @@ function render() {
     $('s-board').value = settings.boardUrl;
     $('s-board').placeholder = settings.defaultBoardUrl;
     $('s-chat').value = settings.telegramChatId;
-    $('s-slr-id').value = settings.slrId;
   }
   $('s-sound').checked = settings.sound;
   $('token-hint').textContent = settings.telegramTokenSet
     ? `저장됨 (${settings.telegramTokenHint}) — 바꿀 때만 새로 입력` : '텔레그램 @BotFather → /newbot 으로 받은 토큰';
-  $('pw-hint').textContent = settings.slrPwSet ? '저장됨 — 바꿀 때만 입력' : '';
 }
 
 async function refresh() {
@@ -259,12 +263,13 @@ $('btn-find-chat').onclick = async () => {
 };
 $('btn-test-telegram').onclick = () => act(() => api('/api/telegram/test', {}), '휴대폰 텔레그램을 확인하세요');
 
-$('btn-save-slr').onclick = () => {
-  const body = { slrId: $('s-slr-id').value };
-  if ($('s-slr-pw').value) body.slrPw = $('s-slr-pw').value;
-  $('s-slr-pw').value = '';
-  act(() => api('/api/settings', body), '저장했습니다');
-};
+async function openLogin() {
+  await act(() => api('/api/login-window', {}), '크롬 창에서 SLR클럽에 로그인한 뒤 창을 닫아 주세요');
+}
+$('btn-login').onclick = openLogin;
+$('status-line').addEventListener('click', (e) => {
+  if (e.target.closest('[data-login]')) openLogin();
+});
 
 refresh();
 listen();

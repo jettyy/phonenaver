@@ -1,4 +1,6 @@
 // 장터 목록을 주기적으로 읽어서, 지난번 확인 이후 올라온 글 중 키워드에 맞는 글을 알린다.
+import fs from 'node:fs';
+import path from 'node:path';
 import * as cheerio from 'cheerio';
 import {
   DEFAULT_BOARD_URL, SITE, boardId, decodeHtml, matchedKeywords, pageUrl, parseList,
@@ -47,12 +49,15 @@ class Http {
 }
 
 export class Watcher {
-  constructor(store, { fetchPage } = {}) {
+  constructor(store, { fetchPage, browser, debugFile } = {}) {
     this.store = store;
     this.http = new Http();
+    this.browser = browser || null; // 단순 요청으로 목록이 안 보이면 크롬으로 읽는다
+    this.debugFile = debugFile || '';
+    this.mode = 'http';
     this.loggedIn = false;
     if (fetchPage) this.fetchPage = fetchPage; // 점검용 가짜 목록
-    this.status = { checking: false, lastCheck: null, lastError: '', nextCheck: null, fails: 0 };
+    this.status = { checking: false, lastCheck: null, lastError: '', nextCheck: null, fails: 0, needLogin: false };
     this.lastPosts = [];
     this.timer = null;
     this.stopped = true;
@@ -86,14 +91,47 @@ export class Watcher {
 
   async fetchPage(page = 1) {
     const board = boardId(this.boardUrl);
-    let posts = parseList(await this.http.request(pageUrl(this.boardUrl, page)), board);
-    if (!posts.length && !this.loggedIn && await this.login()) {
-      posts = parseList(await this.http.request(pageUrl(this.boardUrl, page)), board);
+    const url = pageUrl(this.boardUrl, page);
+    let html = '';
+    if (this.mode === 'http') {
+      let posts = [];
+      try {
+        html = await this.http.request(url);
+        posts = parseList(html, board);
+        if (!posts.length && !this.loggedIn && await this.login()) {
+          html = await this.http.request(url);
+          posts = parseList(html, board);
+        }
+      } catch (err) {
+        if (!this.browser) throw err;
+      }
+      if (posts.length || !this.browser) return this.checked(posts, html, page);
+      this.mode = 'browser';
+      console.log('ℹ️ 단순 요청으로는 목록이 안 보여서 크롬 브라우저로 읽습니다.');
     }
-    if (!posts.length && page === 1) {
-      throw new Error('장터 목록에서 글을 찾지 못했습니다 (로그인이 필요하거나 사이트 화면이 바뀜)');
+    html = await this.browser.html(url);
+    return this.checked(parseList(html, board), html, page);
+  }
+
+  // 글을 못 찾았으면 받은 화면을 남겨 두고(원인 확인용) 이유를 알려 준다
+  checked(posts, html, page) {
+    if (posts.length || page > 1) {
+      if (posts.length) this.status.needLogin = false;
+      return posts;
     }
-    return posts;
+    if (this.debugFile && html) {
+      try {
+        fs.mkdirSync(path.dirname(this.debugFile), { recursive: true });
+        fs.writeFileSync(this.debugFile, html);
+      } catch {
+        // 못 남겨도 괜찮다
+      }
+    }
+    const text = cheerio.load(html || '')('body').text();
+    this.status.needLogin = /로그인|login|회원/i.test(text) || /type=["']?password/i.test(html || '');
+    throw new Error(this.status.needLogin
+      ? '장터 목록이 안 보입니다. SLR클럽 로그인이 필요해 보여요 — 4번 칸 [SLR클럽 로그인 창 열기] 로 로그인하세요'
+      : '장터 목록에서 글을 찾지 못했습니다 (사이트 화면이 바뀜)');
   }
 
   // 한 번 확인. 새로 찾은 [{post, keywords}] 를 돌려준다 (오래된 글부터).
@@ -163,8 +201,10 @@ export class Watcher {
       await this.notify(hits);
     } catch (err) {
       this.status.fails += 1;
+      if (err.message !== this.status.lastError || this.status.fails % 30 === 1) {
+        console.warn(`장터 확인 실패 (${this.status.fails}번째): ${err.message}`);
+      }
       this.status.lastError = err.message;
-      console.warn(`장터 확인 실패 (${this.status.fails}번째): ${err.message}`);
       if (this.status.fails === 5) await this.sendText(`⚠️ SLR 장터 확인이 계속 실패하고 있어요: ${err.message}`);
     } finally {
       this.status.checking = false;

@@ -4,7 +4,8 @@ import http from 'node:http';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_BOARD_URL, matchedKeywords, splitKeywords } from './lib/parse.js';
+import { Browser } from './lib/browser.js';
+import { DEFAULT_BOARD_URL, SITE, matchedKeywords, splitKeywords } from './lib/parse.js';
 import { Store } from './lib/store.js';
 import * as telegram from './lib/telegram.js';
 import { Watcher } from './lib/watcher.js';
@@ -13,6 +14,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 const PUBLIC = path.join(HERE, 'public');
 const DATA_FILE = process.env.SLR_DATA_FILE || path.join(ROOT, 'data', 'slr-alarm.json');
+const PROFILE_DIR = path.join(ROOT, 'data', 'slr-browser');
+const DEBUG_FILE = path.join(ROOT, 'data', 'slr-last-page.html');
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.PORT) || 3100;
 const PORT_RETRIES = 10;
@@ -48,7 +51,14 @@ export function createApp({ store, watcher }) {
       hits: store.data.hits.slice(0, 200),
       unread: store.data.hits.filter((h) => !h.read).length,
       posts: watcher.lastPosts.map((p) => ({ ...p, keywords: matchedKeywords(p.title, active) })),
-      status: { ...watcher.status, interval: watcher.interval, lastNo: store.data.lastNo },
+      status: {
+        ...watcher.status,
+        interval: watcher.interval,
+        lastNo: store.data.lastNo,
+        mode: watcher.mode,
+        loginOpen: Boolean(watcher.browser?.loginOpen),
+        debugPage: Boolean(watcher.debugFile && fs.existsSync(watcher.debugFile)),
+      },
       settings: {
         interval: watcher.interval,
         boardUrl: s.boardUrl,
@@ -112,6 +122,16 @@ export function createApp({ store, watcher }) {
       return state().settings;
     },
 
+    'POST /api/login-window': async () => {
+      if (!watcher.browser) throw httpError(400, '브라우저를 쓸 수 없습니다');
+      await watcher.browser.openLogin(`${SITE}/`, () => {
+        watcher.mode = 'browser'; // 로그인한 세션은 크롬 쪽에 있으므로 이후로는 크롬으로 읽는다
+        console.log('🔑 SLR클럽 로그인 창을 닫았습니다. 목록을 다시 읽습니다.');
+        watcher.checkNow();
+      });
+      return { ok: true };
+    },
+
     'POST /api/telegram/find-chat': async () => {
       if (!store.settings.telegramToken) throw httpError(400, '텔레그램 봇 토큰을 먼저 저장하세요');
       const chatId = await telegram.findChatId(store.settings.telegramToken);
@@ -161,6 +181,12 @@ export function createApp({ store, watcher }) {
       } catch (err) {
         return send(res, err.status || 500, { error: err.message });
       }
+    }
+    if (req.method === 'GET' && url.pathname === '/debug/last-page') {
+      // 목록을 못 찾았을 때 받은 화면 (원인 확인용). 글자 그대로 보여 준다.
+      if (!watcher.debugFile || !fs.existsSync(watcher.debugFile)) return send(res, 404, { error: '남은 화면이 없습니다' });
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+      return fs.createReadStream(watcher.debugFile).pipe(res);
     }
     if (req.method === 'GET') return serveStatic(url.pathname, res);
     return send(res, 404, { error: 'not found' });
@@ -227,7 +253,7 @@ function main() {
     }
   }
 
-  const watcher = new Watcher(store);
+  const watcher = new Watcher(store, { browser: new Browser(PROFILE_DIR), debugFile: DEBUG_FILE });
   const server = createApp({ store, watcher });
 
   const listen = (port, retriesLeft) => {
@@ -247,8 +273,9 @@ function main() {
   listen(PORT, PORT_RETRIES);
 
   watcher.onHit(({ post, keywords }) => console.log(`🔔 [${keywords.join(', ')}] ${post.title}\n   ${post.url}`));
-  const bye = () => {
+  const bye = async () => {
     watcher.stop();
+    await watcher.browser?.close();
     process.exit(0);
   };
   process.on('SIGINT', bye);

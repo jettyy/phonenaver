@@ -13,6 +13,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "cheerio": "^1.2.0"
+    "cheerio": "^1.2.0",
+    "playwright-core": "^1.63.0"
   }
 }

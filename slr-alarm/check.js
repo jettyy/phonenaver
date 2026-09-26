@@ -117,6 +117,25 @@ await test('꺼 둔 키워드는 알리지 않음, 쉬는 동안은 기준을 �
   assert.equal(store.data.lastNo, 0);
 });
 
+await test('목록이 안 보이면 받은 화면을 남기고 로그인을 안내', async () => {
+  const file = tmpFile();
+  const debugFile = path.join(path.dirname(file), 'last.html');
+  const w = new Watcher(new Store(file), { debugFile });
+  w.http.request = async () => '<html><body><form><input type="password"></form>로그인 후 이용하세요</body></html>';
+  await assert.rejects(() => w.fetchPage(1), /로그인/);
+  assert.ok(w.status.needLogin);
+  assert.ok(fs.readFileSync(debugFile, 'utf8').includes('로그인 후'));
+});
+await test('단순 요청으로 안 보이면 크롬으로 읽음', async () => {
+  const w = new Watcher(new Store(tmpFile()), {
+    browser: { html: async () => listHtml([[30, '라이카 Q3 팝니다']]) },
+  });
+  w.http.request = async () => '<html><body>빈 화면</body></html>';
+  const posts = await w.fetchPage(1);
+  assert.equal(w.mode, 'browser');
+  assert.deepEqual(posts.map((p) => p.title), ['라이카 Q3 팝니다']);
+});
+
 console.log('대시보드 API');
 await test('키워드 추가 · 끄기 · 삭제 · 상태', async () => {
   const store = new Store(tmpFile());
