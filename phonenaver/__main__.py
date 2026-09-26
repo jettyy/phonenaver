@@ -1,5 +1,6 @@
 """사용법: python -m phonenaver <명령>
 
+  menu                설정 마법사 + 메뉴 (start.command / start.bat 이 실행)
   bot                 텔레그램 봇 실행 (휴대폰 지시 대기)
   login               브라우저 창을 띄워 네이버에 직접 로그인 (최초 1회, PC)
   import-cookies F    PC에서 내보낸 쿠키 JSON 을 서버 프로필에 넣기
@@ -20,8 +21,9 @@ from .config import Config
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="phonenaver", description="네이버 블로그 자동 글쓰기")
-    parser.add_argument("--env", default=".env", help=".env 파일 경로")
+    parser.add_argument("--env", default=None, help=".env 파일 경로 (기본: 프로그램 폴더의 .env)")
     sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("menu")
     sub.add_parser("bot")
     sub.add_parser("login")
     sub.add_parser("check")
@@ -38,6 +40,10 @@ def main(argv: list[str] | None = None) -> int:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     cfg = Config.load(args.env)
 
+    if args.cmd == "menu":
+        from .menu import main as menu_main
+
+        return menu_main()
     if args.cmd == "bot":
         from .bot import run_bot
 

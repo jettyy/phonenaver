@@ -159,7 +159,7 @@ def find_font(cfg: Config) -> str | None:
     for cand in FONT_CANDIDATES:
         if Path(cand).exists():
             return cand
-    cached = Path("data/fonts/NanumGothic-Bold.ttf")
+    cached = cfg.image_dir.parent / "fonts" / "NanumGothic-Bold.ttf"
     if cached.exists():
         return str(cached)
     try:

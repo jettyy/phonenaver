@@ -7,3 +7,4 @@ python-dotenv>=1.0
 pydantic>=2
 tzdata; sys_platform == "win32"
 pillow>=10
+lxml_html_clean>=0.4

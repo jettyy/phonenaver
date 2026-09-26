@@ -63,7 +63,10 @@ LOGIN_SELECTORS = {
     "pw": "#pw",
     "keep": "#keep, #stay",
     "keep_label": "label[for='keep'], label[for='stay'], .keep_check",
-    "submit": "#log\\.login, button.btn_login, button[type='submit']",
+    "submit": (
+        "#log\\.login, button.btn_login, button[type='submit'], input[type='submit'], "
+        "button:has-text('로그인'), a:has-text('로그인'):not([href*='http'])"
+    ),
     # 로그인 후 '새로운 기기 등록' 화면
     "new_device_save": "#new\\.save, a:has-text('등록')",
 }
@@ -199,8 +202,8 @@ async def interactive_login(cfg: Config, timeout_s: int = 300) -> bool:
             print(".env 의 아이디/비밀번호로 로그인합니다. 캡차나 2단계 인증이 나오면 창에서 직접 처리하세요.")
             try:
                 await auto_login(page, cfg, wait_s=timeout_s)
-            except NotLoggedIn:
-                pass
+            except Exception as exc:  # 자동 입력이 막혀도 창에서 직접 로그인할 수 있게 계속 대기
+                print(f"자동 로그인이 끝나지 않았습니다({type(exc).__name__}). 창에서 직접 로그인을 마무리하세요.")
         else:
             print(f"브라우저 창에서 네이버에 로그인하세요. ({timeout_s}초 대기, '로그인 상태 유지' 체크 추천)")
         for _ in range(timeout_s):
@@ -288,7 +291,13 @@ async def auto_login(page: Page, cfg: Config, wait_s: int = 90) -> None:
             await page.locator(LOGIN_SELECTORS["keep_label"]).first.click()
     except Exception:
         pass
-    await page.locator(LOGIN_SELECTORS["submit"]).first.click()
+    # 로그인 버튼 (화면이 바뀌어 버튼을 못 찾으면 비밀번호 칸에서 Enter)
+    submit = page.locator(LOGIN_SELECTORS["submit"]).first
+    try:
+        await submit.click(timeout=5000)
+    except PWTimeout:
+        log.info("로그인 버튼을 찾지 못해 Enter 로 제출")
+        await page.locator(LOGIN_SELECTORS["pw"]).first.press("Enter")
 
     for _ in range(wait_s):
         await asyncio.sleep(1)

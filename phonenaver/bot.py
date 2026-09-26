@@ -200,5 +200,7 @@ def build_app(cfg: Config) -> Application:
 
 def run_bot(cfg: Config) -> None:
     app = build_app(cfg)
+    # 메뉴에서 봇을 껐다 다시 켤 수 있도록 매번 새 이벤트 루프 사용
+    asyncio.set_event_loop(asyncio.new_event_loop())
     log.info("텔레그램 봇 시작")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

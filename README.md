@@ -44,74 +44,59 @@
 말투·분량·대상은 메시지에 같이 쓰면 됩니다. (예: `1500자로`, `초보자용으로`, `리스트 위주로`)
 링크만 주면 링크 내용만으로 쓰고, `최신`/`검색`/`찾아` 같은 말을 넣으면 웹 검색도 함께 합니다.
 
-## 설치 (PC 또는 항상 켜둘 컴퓨터/서버)
+## 설치와 실행 — 맥·윈도우 똑같이 "더블클릭"
 
-Python 3.10 이상이 필요합니다.
+### 처음 한 번: 프로그램 받기
+**방법 A (추천, 나중에 메뉴에서 자동 업데이트 가능)** — 터미널(맥) / 명령 프롬프트(윈도우)에서 한 줄:
+```
+git clone -b claude/eloquent-mccarthy-3mz2z7 https://github.com/jettyy/phonenaver.git
+```
+**방법 B** — GitHub 에서 브랜치 `claude/eloquent-mccarthy-3mz2z7` 선택 → [Code] → [Download ZIP] → 압축 풀기
 
-```bash
-git clone <이 저장소> && cd phonenaver
-python -m venv .venv
-source .venv/bin/activate          # 윈도우: .venv\Scripts\activate
-pip install -r requirements.txt
-playwright install chromium
-cp .env.example .env               # 그리고 .env 를 열어 값 채우기
+### 실행: 이 파일만 더블클릭
+| | 더블클릭할 파일 |
+|---|---|
+| 맥 | `start.command` |
+| 윈도우 | `start.bat` |
+
+처음 실행하면 자동으로 이렇게 진행됩니다. **질문에 답하고 엔터만 누르면 됩니다.**
+1. 필요한 프로그램 설치 (파이썬 패키지, 글쓰기용 브라우저, Claude Code) — 처음 한 번 몇 분 걸림
+2. Claude 구독 계정 로그인 (브라우저가 열리면 로그인)
+3. 설정 질문
+   - 텔레그램 봇 토큰 (휴대폰 텔레그램에서 `@BotFather` → `/newbot` 으로 받기)
+   - **휴대폰에서 내 봇에게 아무 메시지나 보내면 자동으로 내 채팅이 등록됨** (채팅 ID 를 따로 찾을 필요 없음)
+   - 네이버 블로그 아이디, 네이버 아이디/비밀번호 (비밀번호는 입력해도 화면에 안 보임)
+   - Pexels 무료 사진 키 (선택, 엔터로 건너뛰기)
+4. 네이버 로그인 확인 (브라우저 창이 열리고 자동 입력, 캡차·추가 인증이 나오면 직접 처리)
+5. 봇 실행 → 휴대폰으로 지시하면 끝
+
+두 번째부터는 더블클릭하고 **엔터 한 번**이면 봇이 실행됩니다. 메뉴:
+```
+ 1. 봇 실행 (휴대폰 지시 받기)   ← 엔터
+ 2. 테스트 글쓰기
+ 3. 네이버 로그인 다시 하기
+ 4. 설정 바꾸기 (텔레그램·네이버·사진)
+ 5. 내 블로그 카테고리 보기
+ 6. Claude 로그인 다시 하기
+ 7. 최신 버전으로 업데이트
+ 0. 종료
 ```
 
-### 1) Claude — 내 구독 계정 연결 (API 키 필요 없음)
-Claude Pro/Max 구독 계정을 그대로 씁니다. 이 컴퓨터에 [Claude Code](https://code.claude.com)를 설치하고 한 번 로그인하세요.
+### 더블클릭이 안 될 때
+- **맥** "확인되지 않은 개발자" 경고: `start.command` 를 **우클릭 → 열기 → 열기**. (ZIP 으로 받아서 실행 권한이 없다고 나오면 터미널에 `sh ` 입력 후 파일을 끌어다 놓고 엔터)
+- **윈도우** "Windows의 PC 보호" 창: **추가 정보 → 실행**.
+- 파이썬이 없으면: 맥은 설치 안내 창이 뜨고, 윈도우는 자동으로 설치를 시도합니다. 설치 후 다시 더블클릭하세요.
+  (직접 설치: https://www.python.org/downloads/ — 윈도우는 "Add python.exe to PATH" 체크)
 
-```bash
-npm install -g @anthropic-ai/claude-code   # Node.js 18 이상 필요
-claude                                      # 실행 후 안내에 따라 구독 계정으로 로그인, 끝나면 /exit
-```
-
-화면 없는 서버에서 돌릴 때는 PC에서 `claude setup-token` 을 실행해 받은 토큰을 `.env` 의 `CLAUDE_CODE_OAUTH_TOKEN` 에 넣으면 됩니다.
-프로그램은 `ANTHROPIC_API_KEY` 가 환경에 있어도 **무시하고 구독 계정으로만** 실행합니다.
-사진 분석·웹 검색·글 작성 모두 구독 사용량에서 차감되며, 한도에 도달하면 봇이 알려 줍니다.
-모델은 `CLAUDE_MODEL=opus` / `sonnet` 처럼 바꿀 수 있습니다 (비우면 계정 기본값).
-
-### 2) 텔레그램 봇 만들기 (휴대폰 지시용)
-1. 텔레그램에서 `@BotFather` → `/newbot` → 받은 토큰을 `TELEGRAM_BOT_TOKEN` 에 입력
-2. `python -m phonenaver bot` 실행 후, 내 봇에게 `/id` 전송 → 나온 숫자를 `ALLOWED_CHAT_IDS` 에 입력
-3. 봇 재시작. 이제 **허용된 채팅에서 온 메시지만** 처리합니다.
-
-### 3) 네이버 로그인
-`.env` 에 블로그 아이디와 로그인 정보를 넣습니다.
-
-```
-NAVER_BLOG_ID=myblog        # blog.naver.com/<여기>
-NAVER_ID=네이버아이디
-NAVER_PW=비밀번호
-```
-
-글을 쓸 때 로그인이 안 되어 있거나 풀려 있으면 **자동으로 네이버 로그인 화면에서 아이디/비밀번호를 입력해 로그인**합니다
-(한 글자씩 치지 않고 붙여넣기 방식이라 자동입력 방지에 덜 걸림, '로그인 상태 유지' 체크).
-로그인 세션은 `data/browser` 폴더에 저장되어 다음부터는 로그인 없이 바로 씁니다.
-
-처음 한 번은 PC에서 창을 띄워 확인하는 것을 추천합니다. 캡차·새 기기 인증·2단계 인증이 나오면 창에서 직접 처리하면 됩니다.
-
-```bash
-python -m phonenaver login     # 창이 뜨고 아이디/비밀번호가 자동 입력됨 → 추가 인증이 있으면 직접 처리
-python -m phonenaver check     # 로그인 세션 확인
-```
-
-2단계 인증을 쓰는 계정은 자동 로그인 때 네이버 앱으로 승인 요청이 오며, 90초 안에 승인하면 이어서 진행됩니다.
-비밀번호는 `.env` 에만 저장되므로 이 파일은 절대 다른 사람과 공유하지 마세요.
-
-**화면 없는 서버에서 캡차 때문에 자동 로그인이 막힐 때**: PC 크롬에서 네이버 로그인 → 확장 프로그램 *Cookie-Editor* 로 naver.com 쿠키를
-JSON 으로 내보내기 → 서버에서 `python -m phonenaver import-cookies cookies.json`. 쿠키 파일은 가져온 뒤 바로 지우세요.
-
-### 4) 실행
-
-```bash
-python -m phonenaver bot                                  # 휴대폰 지시 대기
-python -m phonenaver write "캠핑 초보 준비물 정리" --dry   # 터미널에서 미리보기 테스트
-python -m phonenaver write "캠핑 초보 준비물 정리"         # 터미널에서 바로 임시저장
-python -m phonenaver write "카페 후기 써줘" --photo a.jpg --photo b.jpg   # 내 사진 분석+첨부
-python -m phonenaver categories                          # 카테고리 목록 확인
-```
-
-처음에는 `.env` 에서 `HEADLESS=false` 로 두고 브라우저가 에디터를 조작하는 모습을 확인해 보는 것을 추천합니다.
+### 알아두면 좋은 것
+- **Claude 는 API 키 없이 내 구독(Pro/Max)** 으로 동작합니다. 사진 분석·검색·글 작성 모두 구독 사용량에서 차감되고, 한도에 걸리면 봇이 알려 줍니다.
+  모델을 바꾸려면 `.env` 에 `CLAUDE_MODEL=opus` / `sonnet`.
+- **네이버 비밀번호는 이 컴퓨터의 `.env` 파일에만** 저장됩니다. 이 파일은 절대 공유하지 마세요.
+  2단계 인증 계정은 로그인할 때 네이버 앱 승인 요청이 오며, 90초 안에 승인하면 됩니다.
+- 봇은 PC 가 켜져 있는 동안만 지시를 받습니다. 잠자기(절전)에 들어가지 않게 해 주세요.
+- 고급 설정(이미지 개수, 썸네일 카드, 해시태그 등)은 `.env` 파일의 설명을 참고하세요.
+- 명령어로 직접 쓰고 싶다면: `python -m phonenaver menu | bot | login | write "주제" --dry | categories`
+  (가상환경: 맥 `source .venv/bin/activate`, 윈도우 `.venv\Scripts\activate`)
 
 ## 구조
 

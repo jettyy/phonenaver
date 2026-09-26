@@ -86,10 +86,30 @@ def _extract_json(text: str):
     return json.loads(raw)
 
 
+def find_claude(name: str = "claude") -> str:
+    """claude 실행 파일 찾기. PATH 에 없어도 설치 프로그램이 쓰는 기본 위치를 확인한다."""
+    found = shutil.which(name)
+    if found:
+        return found
+    home = Path.home()
+    for cand in (
+        home / ".local/bin/claude",           # 공식 설치 스크립트 (맥)
+        home / ".local/bin/claude.exe",       # 공식 설치 스크립트 (윈도우)
+        home / ".claude/local/claude",
+        Path("/opt/homebrew/bin/claude"),     # 맥 Homebrew
+        Path("/usr/local/bin/claude"),
+        home / ".npm-global/bin/claude",
+        home / "AppData/Roaming/npm/claude.cmd",  # 윈도우 npm
+    ):
+        if cand.exists():
+            return str(cand)
+    return name
+
+
 class Writer:
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.bin = shutil.which(cfg.claude_bin) or cfg.claude_bin
+        self.bin = find_claude(cfg.claude_bin)
         self.workdir = cfg.image_dir.parent.resolve() / "claude"
         self.workdir.mkdir(parents=True, exist_ok=True)
 
@@ -127,7 +147,8 @@ class Writer:
             )
         except FileNotFoundError as exc:
             raise AIError(
-                "Claude Code(claude) 가 설치되어 있지 않습니다. `npm install -g @anthropic-ai/claude-code` 후 "
+                "Claude Code(claude) 가 설치되어 있지 않습니다. 맥은 터미널에서 "
+                "`curl -fsSL https://claude.ai/install.sh | bash` 로 설치한 뒤 "
                 "`claude` 를 실행해 구독 계정으로 로그인하세요."
             ) from exc
         except subprocess.TimeoutExpired as exc:

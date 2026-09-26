@@ -6,6 +6,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# 프로그램 폴더 (어디서 실행하든 이 폴더 기준으로 .env 와 data/ 를 사용)
+ROOT = Path(__file__).resolve().parent.parent
+DATA = ROOT / "data"
+
 
 def _bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
@@ -17,6 +21,14 @@ def _bool(name: str, default: bool) -> bool:
 def _int(name: str, default: int) -> int:
     value = os.getenv(name, "").strip()
     return int(value) if value else default
+
+
+def _path(name: str, default: Path) -> Path:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return default
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else ROOT / path
 
 
 def _ids(name: str) -> set[int]:
@@ -42,9 +54,9 @@ class Config:
     naver_id: str = ""
     naver_pw: str = ""
     headless: bool = True
-    browser_profile_dir: Path = Path("data/browser")
+    browser_profile_dir: Path = DATA / "browser"
     browser_executable: str | None = None
-    screenshot_dir: Path = Path("data/screens")
+    screenshot_dir: Path = DATA / "screens"
 
     include_sources: bool = False
     append_hashtags: bool = True
@@ -53,16 +65,15 @@ class Config:
     thumbnail_card: bool = True
     pexels_api_key: str = ""
     font_path: str | None = None
-    image_dir: Path = Path("data/images")
+    image_dir: Path = DATA / "images"
 
     auto_category: bool = True
     # 카테고리 목록을 직접 지정할 때 (쉼표 구분). 비우면 블로그에서 자동으로 불러옴
     naver_categories: list[str] = field(default_factory=list)
 
     @classmethod
-    def load(cls, env_file: str | None = ".env") -> "Config":
-        if env_file:
-            load_dotenv(env_file)
+    def load(cls, env_file: str | None = None) -> "Config":
+        load_dotenv(env_file or ROOT / ".env", override=True)
         return cls(
             claude_bin=os.getenv("CLAUDE_BIN", "").strip() or "claude",
             claude_oauth_token=os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip(),
@@ -76,7 +87,7 @@ class Config:
             naver_id=os.getenv("NAVER_ID", "").strip(),
             naver_pw=os.getenv("NAVER_PW", ""),
             headless=_bool("HEADLESS", True),
-            browser_profile_dir=Path(os.getenv("BROWSER_PROFILE_DIR", "").strip() or "data/browser"),
+            browser_profile_dir=_path("BROWSER_PROFILE_DIR", DATA / "browser"),
             browser_executable=os.getenv("BROWSER_EXECUTABLE", "").strip() or None,
             include_sources=_bool("INCLUDE_SOURCES", False),
             append_hashtags=_bool("APPEND_HASHTAGS", True),
