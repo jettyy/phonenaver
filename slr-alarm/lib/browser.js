@@ -12,6 +12,14 @@ export class Browser {
     this.context = null;
     this.page = null;
     this.loginOpen = false;
+    this.queue = Promise.resolve();
+  }
+
+  // 크롬 한 개를 여러 곳에서 동시에 만지지 않도록 한 번에 하나씩
+  exclusive(fn) {
+    const run = this.queue.then(fn, fn);
+    this.queue = run.catch(() => {});
+    return run;
   }
 
   async launch(headless) {
@@ -31,7 +39,11 @@ export class Browser {
     throw new Error(`크롬을 찾지 못했습니다. Google Chrome 을 설치해 주세요. (${String(lastErr?.message || '').split('\n')[0]})`);
   }
 
-  async html(url) {
+  html(url) {
+    return this.exclusive(() => this.read(url));
+  }
+
+  async read(url) {
     if (this.loginOpen) throw new Error('SLR클럽 로그인 창이 열려 있습니다. 로그인하고 창을 닫아 주세요');
     if (!this.context) {
       this.context = await this.launch(true);
@@ -60,7 +72,11 @@ export class Browser {
   }
 
   // 사용자가 직접 로그인할 창을 띄운다. 창을 닫으면 onClosed 가 불린다.
-  async openLogin(url, onClosed) {
+  openLogin(url, onClosed) {
+    return this.exclusive(() => this.showLogin(url, onClosed));
+  }
+
+  async showLogin(url, onClosed) {
     if (this.loginOpen) return;
     await this.close();
     const ctx = await this.launch(false);

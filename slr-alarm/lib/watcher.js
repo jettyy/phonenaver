@@ -152,6 +152,8 @@ export class Watcher {
     const keywords = store.activeKeywords();
     const notified = new Set(store.data.notified);
     const hits = [];
+    this.status.lastNew = last ? unique.filter((p) => p.no > last).length : 0;
+    this.status.baseline = !last;
     if (last) { // 처음 확인할 때는 기준만 잡는다 (이미 올라와 있던 글로 알림 폭탄 방지)
       for (const post of [...unique].reverse()) {
         if (post.no <= last || notified.has(post.no)) continue;
@@ -195,6 +197,7 @@ export class Watcher {
     this.status.checking = true;
     try {
       const hits = await this.poll();
+      this.logCheck(hits);
       this.status.lastError = '';
       if (this.status.fails >= 5) await this.sendText('✅ SLR 장터 확인이 다시 정상으로 돌아왔어요.');
       this.status.fails = 0;
@@ -210,6 +213,18 @@ export class Watcher {
       this.status.checking = false;
       this.status.lastCheck = new Date().toISOString();
     }
+  }
+
+  // 창에 한 줄씩 남겨서 멈춘 게 아니라 계속 돌고 있다는 걸 보여 준다
+  logCheck(hits) {
+    const d = new Date();
+    const hms = [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, '0')).join(':');
+    if (this.status.baseline) {
+      console.log(`✓ ${hms} 장터 확인 시작 — 지금 목록(최신 글 ${this.store.data.lastNo}번)까지는 이미 본 글로 두고, 이후 새 글을 봅니다`);
+      return;
+    }
+    const tail = hits.length ? ` → 🔔 알림 ${hits.length}건` : '';
+    console.log(`✓ ${hms} 확인 — 새 글 ${this.status.lastNew}개${tail} (다음 확인 ${this.interval}초 뒤)`);
   }
 
   async sendText(text) {
@@ -250,6 +265,7 @@ export class Watcher {
   }
 
   start() {
+    if (!this.stopped) return;
     this.stopped = false;
     this.checkNow();
   }

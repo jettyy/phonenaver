@@ -1,8 +1,9 @@
 // SLR 장터 알림 대시보드: npm start → http://localhost:3100
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Browser } from './lib/browser.js';
 import { DEFAULT_BOARD_URL, SITE, matchedKeywords, splitKeywords } from './lib/parse.js';
@@ -120,6 +121,13 @@ export function createApp({ store, watcher }) {
       }
       if (patch.interval !== undefined || patch.boardUrl !== undefined) watcher.checkNow();
       return state().settings;
+    },
+
+    'POST /api/shutdown': () => {
+      // 새로 켜는 대시보드가 예전 것을 끌 때 쓴다 (같은 저장 파일을 둘이 덮어쓰지 않게)
+      console.log('ℹ️ 다른 창에서 SLR 장터 알림을 새로 켜서, 이 창은 끝냅니다.');
+      setTimeout(() => process.emit('SIGTERM'), 100);
+      return { ok: true };
     },
 
     'POST /api/login-window': async () => {
@@ -241,6 +249,61 @@ function openBrowser(url) {
   }
 }
 
+// ── 이미 켜져 있는 대시보드 ──
+// 다른 창에 예전 대시보드가 켜져 있으면 둘이 같은 파일을 덮어쓰고 알림도 두 번 간다.
+// 그래서 새로 켤 때 예전 것을 끄고 그 자리(같은 주소)에서 연다.
+
+async function isOurs(port) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/state`, { signal: AbortSignal.timeout(1500) });
+    return Array.isArray((await res.json()).keywords);
+  } catch {
+    return false;
+  }
+}
+
+function portBusy(port) {
+  return new Promise((resolve) => {
+    const sock = net.connect(port, HOST);
+    sock.once('connect', () => { sock.destroy(); resolve(true); });
+    sock.once('error', () => resolve(false));
+  });
+}
+
+async function waitFree(port, ms) {
+  for (const end = Date.now() + ms; Date.now() < end;) {
+    if (!(await portBusy(port))) return true;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return false;
+}
+
+async function replaceRunning(port) {
+  if (!(await isOurs(port))) return;
+  console.log('ℹ️ 이미 켜져 있던 SLR 장터 알림을 끄고 새로 켭니다.');
+  try {
+    await fetch(`http://127.0.0.1:${port}/api/shutdown`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(1500),
+    });
+  } catch {
+    // 예전 버전에는 끄는 기능이 없다
+  }
+  if (await waitFree(port, 3000)) return;
+  if (process.platform !== 'win32') {
+    try {
+      const out = execFileSync('lsof', ['-ti', `tcp:${port}`, '-sTCP:LISTEN'], { encoding: 'utf8' });
+      for (const pid of out.split(/\s+/).filter(Boolean).map(Number)) {
+        if (pid && pid !== process.pid) process.kill(pid, 'SIGTERM');
+      }
+    } catch {
+      // lsof 가 없으면 아래 안내로
+    }
+  }
+  if (!(await waitFree(port, 5000))) {
+    console.log(`⚠️ 예전 대시보드를 끄지 못했습니다. 다른 터미널 창에서 Ctrl+C 로 꺼 주세요.`);
+  }
+}
+
 function main() {
   const store = new Store(DATA_FILE);
   const s = store.settings;
@@ -256,21 +319,33 @@ function main() {
   const watcher = new Watcher(store, { browser: new Browser(PROFILE_DIR), debugFile: DEBUG_FILE });
   const server = createApp({ store, watcher });
 
-  const listen = (port, retriesLeft) => {
-    server.once('error', (err) => {
-      if (err.code === 'EADDRINUSE' && retriesLeft > 0) return listen(port + 1, retriesLeft - 1);
-      console.error(`❌ 대시보드를 열지 못했습니다: ${err.message}`);
-      process.exit(1);
-    });
-    server.listen(port, HOST, () => {
-      const url = `http://localhost:${port}`;
-      console.log(`🔔 SLR 장터 알림 대시보드가 열렸습니다 → ${url}`);
-      console.log('   이 창을 닫으면 알림이 멈춥니다. (컴퓨터가 잠자기에 들어가지 않게 해 주세요)');
-      watcher.start();
-      openBrowser(url);
-    });
+  const ready = (port) => {
+    const url = `http://localhost:${port}`;
+    console.log(`🔔 SLR 장터 알림 대시보드가 열렸습니다 → ${url}`);
+    console.log('   이 창을 닫거나 Ctrl+C 를 누르면 알림이 멈춥니다. (컴퓨터가 잠자기에 들어가지 않게 해 주세요)');
+    console.log(`   ${watcher.interval}초마다 확인하고, 확인할 때마다 아래에 한 줄씩 남깁니다.`);
+    watcher.start();
+    openBrowser(url);
   };
-  listen(PORT, PORT_RETRIES);
+  const listen = (port, retriesLeft) => {
+    const onListening = () => {
+      server.off('error', onError);
+      ready(port);
+    };
+    const onError = (err) => {
+      server.off('listening', onListening);
+      if (err.code === 'EADDRINUSE' && retriesLeft > 0) {
+        console.log(`ℹ️ ${port}번은 다른 프로그램이 쓰고 있어서 ${port + 1}번으로 엽니다.`);
+        return listen(port + 1, retriesLeft - 1);
+      }
+      console.error(`❌ 대시보드를 열지 못했습니다: ${err.message}`);
+      return process.exit(1);
+    };
+    server.once('listening', onListening);
+    server.once('error', onError);
+    server.listen(port, HOST);
+  };
+  replaceRunning(PORT).then(() => listen(PORT, PORT_RETRIES));
 
   watcher.onHit(({ post, keywords }) => console.log(`🔔 [${keywords.join(', ')}] ${post.title}\n   ${post.url}`));
   const bye = async () => {
