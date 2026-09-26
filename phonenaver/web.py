@@ -315,7 +315,8 @@ def build(state: State, open_url: str | None = None) -> web.Application:
             was_running = state.bot.running
             await state.bot.stop()  # 봇이 메시지를 가져가 버리지 않도록 잠시 끔
             username = await telegram_setup.check_token(token)
-            state.connect_status = f"휴대폰 텔레그램에서 @{username} 에게 아무 메시지나 보내세요 (3분 대기)"
+            state.connect_status = (f"휴대폰 텔레그램에서 @{username} 에게 (여러 컴퓨터용이면 봇들이 들어 있는 그룹에) "
+                                    "아무 메시지나 보내세요 (3분 대기)")
             state.events.publish("state", snapshot())
             log.info(state.connect_status)
             try:

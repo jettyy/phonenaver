@@ -392,3 +392,5 @@ td.src-cell { white-space: nowrap; }
 .job-more { color: #14607f; font-weight: 600; font-size: 12px; }
 .job-request summary { cursor: pointer; color: #14607f; font-weight: 600; font-size: 12.5px; margin-bottom: 6px; }
 .job-request pre { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px; max-height: 260px; }
+details.note summary { cursor: pointer; color: var(--text); }
+details.note ol { margin: 8px 0 0 18px; padding: 0; }

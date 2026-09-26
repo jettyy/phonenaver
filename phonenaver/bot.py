@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 
 from telegram import InputMediaPhoto, Update
 from telegram.constants import ChatAction
+from telegram.error import Conflict
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from . import html_utils, images
@@ -57,8 +59,17 @@ HELP = """📝 네이버 블로그 자동 글쓰기 봇
 
 · 앞에 /test 를 붙이면 저장하지 않고 미리보기만 보냅니다.
 · 말투·분량·대상도 자유롭게 지시하세요. (예: 1500자, 반말, 초보자용)
+· 여러 컴퓨터(블로그)에 한 번에: 컴퓨터마다 봇을 만들어 한 그룹에 넣고 그룹에 보내기
 · /id 채팅 ID 확인
 · 진행 상황과 기록은 PC 대시보드(npm start)에서도 볼 수 있어요."""
+
+
+def strip_bot_mention(text: str, username: str | None) -> str:
+    """그룹에서 붙는 '/test@봇이름', '@봇이름' 을 떼어 낸다."""
+    text = re.sub(r"^/(\w+)@\w+", r"/\1", text.strip())
+    if isinstance(username, str) and username:
+        text = re.sub(rf"@{re.escape(username)}\b", "", text, flags=re.IGNORECASE)
+    return text.strip()
 
 
 def build_app(get_cfg, runner: JobRunner) -> Application:
@@ -102,11 +113,23 @@ def build_app(get_cfg, runner: JobRunner) -> Application:
             return
         await msg.edit_text("📂 내 블로그 카테고리\n" + "\n".join(f"· {x.label}" for x in cats))
 
+    def label() -> str:
+        """여러 컴퓨터(블로그)가 한 그룹에서 같이 답할 때 누가 답했는지 보이게."""
+        return f"[{get_cfg().naver_blog_id or 'PC'}] "
+
     async def process(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, photos: list[Path]) -> None:
         chat = update.effective_chat.id
+        tag = label()
         waiting = sum(1 for j in runner.jobs.values() if j.status in ("queued", "running"))
         first = "🚀 작업을 시작합니다..." if not waiting else f"⏳ 앞에 작업 {waiting}개가 있어요. 차례가 되면 시작합니다."
-        status = await context.bot.send_message(chat, first + (f" (내 사진 {len(photos)}장)" if photos else ""))
+        status_msg = await context.bot.send_message(chat, tag + first + (f" (내 사진 {len(photos)}장)" if photos else ""))
+
+        class Status:
+            @staticmethod
+            async def edit_text(msg: str) -> None:
+                await status_msg.edit_text(tag + msg)
+
+        status = Status()
 
         async def progress(msg: str) -> None:
             try:
@@ -126,7 +149,7 @@ def build_app(get_cfg, runner: JobRunner) -> Application:
             await status.edit_text(f"❌ {exc}")
             if exc.screenshot:
                 with open(exc.screenshot, "rb") as f:
-                    await context.bot.send_photo(chat, f, caption="오류 당시 화면")
+                    await context.bot.send_photo(chat, f, caption=tag + "오류 당시 화면")
             return
         except asyncio.CancelledError:
             await status.edit_text("취소되었습니다.")
@@ -163,10 +186,10 @@ def build_app(get_cfg, runner: JobRunner) -> Application:
                 media = [InputMediaPhoto(img.path.read_bytes()) for img in result.images[:10]]
                 await context.bot.send_media_group(chat, media)
             for i in range(0, len(plain), 3500):
-                await context.bot.send_message(chat, plain[i:i + 3500])
+                await context.bot.send_message(chat, (tag if i == 0 else "") + plain[i:i + 3500])
         elif result.draft and result.draft.screenshot:
             with open(result.draft.screenshot, "rb") as f:
-                await context.bot.send_photo(chat, f, caption="네이버 앱 > 글쓰기 > 임시저장 글에서 확인·발행하세요")
+                await context.bot.send_photo(chat, f, caption=tag + "네이버 앱 > 글쓰기 > 임시저장 글에서 확인·발행하세요")
 
     def buffer_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str = "", photo: Path | None = None) -> None:
         """휴대폰에서 연달아 온 메시지를 모아 하나의 요청으로 처리한다.
@@ -198,7 +221,7 @@ def build_app(get_cfg, runner: JobRunner) -> Application:
     async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not allowed(update):
             return await deny(update)
-        buffer_input(update, context, text=update.message.text or "")
+        buffer_input(update, context, text=strip_bot_mention(update.message.text or "", context.bot.username))
 
     async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not allowed(update):
@@ -209,7 +232,7 @@ def build_app(get_cfg, runner: JobRunner) -> Application:
         suffix = Path(file.file_path or "").suffix or ".jpg"
         path = upload_dir / f"{msg.chat_id}-{msg.message_id}{suffix}"
         await file.download_to_drive(path)
-        buffer_input(update, context, text=msg.caption or "", photo=path)
+        buffer_input(update, context, text=strip_bot_mention(msg.caption or "", context.bot.username), photo=path)
 
     app.add_handler(CommandHandler(["start", "help"], start))
     app.add_handler(CommandHandler("id", chat_id))
@@ -243,7 +266,7 @@ class TelegramBot:
             app = build_app(self.get_cfg, self.runner)
             await app.initialize()
             await app.start()
-            await app.updater.start_polling(drop_pending_updates=False)
+            await app.updater.start_polling(drop_pending_updates=False, error_callback=self._on_poll_error)
             self.username = app.bot.username or ""
             self.app = app
             log.info("🤖 텔레그램 봇 켜짐 (@%s) — 휴대폰으로 지시를 보내세요.", self.username)
@@ -251,7 +274,22 @@ class TelegramBot:
             self.error = str(exc)
             log.error("텔레그램 봇을 켜지 못했습니다: %s", exc)
 
-    async def stop(self) -> None:
+    def _on_poll_error(self, exc: Exception) -> None:
+        """폴링 오류. 같은 봇을 다른 컴퓨터에서도 켠 경우(Conflict)는 알아듣게 알리고 이 봇을 끈다."""
+        if isinstance(exc, Conflict):
+            if not self.error:
+                self.error = (
+                    "같은 텔레그램 봇이 다른 컴퓨터에서도 켜져 있습니다. 봇 하나는 한 컴퓨터에서만 쓸 수 있어요. "
+                    "여러 컴퓨터에서 동시에 쓰려면 컴퓨터마다 봇을 따로 만들고, 봇들을 한 그룹에 넣으세요 (대시보드 3번 칸 안내)."
+                )
+                log.error("🚫 %s", self.error)
+                asyncio.get_event_loop().create_task(self.stop(keep_error=True))
+            return
+        log.warning("텔레그램 연결 오류 (자동으로 다시 시도): %s", exc)
+
+    async def stop(self, keep_error: bool = False) -> None:
+        if not keep_error:
+            self.error = ""
         app, self.app = self.app, None
         if app is None:
             return

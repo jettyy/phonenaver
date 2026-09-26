@@ -64,3 +64,45 @@ def test_split_messages_become_one_request(monkeypatch):
         assert text == bot.PHOTO_ONLY_REQUEST and len(photos) == 1
 
     asyncio.run(scenario())
+
+
+def test_group_message_with_bot_mention(monkeypatch):
+    """여러 컴퓨터용: 봇들이 들어 있는 그룹(음수 ID)에서 '/test@봇이름 주제' 로 보낸 경우."""
+    monkeypatch.setattr(bot, "MERGE_SECONDS", 0.1)
+    cfg = Config(telegram_bot_token="1:x", allowed_chat_ids={-100123}, naver_blog_id="doublepapa")
+    runner = FakeRunner()
+
+    async def scenario():
+        app = bot.build_app(lambda: cfg, runner)
+        cmd_handler = next(h for h in app.handlers[0] if isinstance(h, MessageHandler) and "Regex" in repr(h.filters))
+        ctx = SimpleNamespace(chat_data={}, bot=AsyncMock())
+        ctx.bot.username = "naver1_bot"
+        await cmd_handler.callback(_update(-100123, "/test@naver1_bot 캠핑 준비물 정리"), ctx)
+        await asyncio.sleep(0.4)
+        assert runner.submitted == [("/test 캠핑 준비물 정리", [])]
+        first_reply = ctx.bot.send_message.call_args_list[0].args[1]
+        assert first_reply.startswith("[doublepapa] ")  # 어느 블로그(컴퓨터)의 답인지 표시
+
+        # 등록 안 된 채팅은 거절
+        runner.submitted.clear()
+        other = _update(555, "글 써줘")
+        other.effective_message.reply_text = AsyncMock()
+        await cmd_handler.callback(other, ctx)
+        await asyncio.sleep(0.3)
+        assert runner.submitted == []
+
+    asyncio.run(scenario())
+
+
+def test_conflict_stops_bot_with_clear_message():
+    from telegram.error import Conflict
+
+    async def scenario():
+        tb = bot.TelegramBot(lambda: Config(), FakeRunner())
+        tb.app = SimpleNamespace(updater=SimpleNamespace(stop=AsyncMock()), stop=AsyncMock(), shutdown=AsyncMock())
+        tb._on_poll_error(Conflict("terminated by other getUpdates request"))
+        await asyncio.sleep(0.05)
+        assert not tb.running
+        assert "다른 컴퓨터" in tb.status()["error"]
+
+    asyncio.run(scenario())
