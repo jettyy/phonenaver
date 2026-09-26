@@ -26,15 +26,21 @@ def _ids(name: str) -> set[int]:
 
 @dataclass
 class Config:
-    anthropic_api_key: str | None = None
-    claude_model: str = "claude-opus-5"
-    claude_fallback: bool = True
+    # Claude: 구독 계정(Pro/Max)으로 Claude Code CLI 를 실행
+    claude_bin: str = "claude"
+    claude_oauth_token: str = ""  # `claude setup-token` 으로 받은 토큰 (서버용, 비우면 로그인 정보 사용)
+    claude_model: str = ""  # 비우면 계정 기본 모델. opus / sonnet 등
+    claude_max_turns: int = 30
+    claude_timeout: int = 900
     max_searches: int = 5
 
     telegram_bot_token: str = ""
     allowed_chat_ids: set[int] = field(default_factory=set)
 
     naver_blog_id: str = ""
+    # 네이버 아이디/비밀번호: 로그인이 풀리면 자동으로 다시 로그인
+    naver_id: str = ""
+    naver_pw: str = ""
     headless: bool = True
     browser_profile_dir: Path = Path("data/browser")
     browser_executable: str | None = None
@@ -43,21 +49,41 @@ class Config:
     include_sources: bool = False
     append_hashtags: bool = True
 
+    image_count: int = 3
+    thumbnail_card: bool = True
+    pexels_api_key: str = ""
+    font_path: str | None = None
+    image_dir: Path = Path("data/images")
+
+    auto_category: bool = True
+    # 카테고리 목록을 직접 지정할 때 (쉼표 구분). 비우면 블로그에서 자동으로 불러옴
+    naver_categories: list[str] = field(default_factory=list)
+
     @classmethod
     def load(cls, env_file: str | None = ".env") -> "Config":
         if env_file:
             load_dotenv(env_file)
         return cls(
-            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY") or None,
-            claude_model=os.getenv("CLAUDE_MODEL", "").strip() or "claude-opus-5",
-            claude_fallback=_bool("CLAUDE_FALLBACK", True),
+            claude_bin=os.getenv("CLAUDE_BIN", "").strip() or "claude",
+            claude_oauth_token=os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip(),
+            claude_model=os.getenv("CLAUDE_MODEL", "").strip(),
+            claude_max_turns=_int("CLAUDE_MAX_TURNS", 30),
+            claude_timeout=_int("CLAUDE_TIMEOUT", 900),
             max_searches=_int("MAX_SEARCHES", 5),
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
             allowed_chat_ids=_ids("ALLOWED_CHAT_IDS"),
             naver_blog_id=os.getenv("NAVER_BLOG_ID", "").strip(),
+            naver_id=os.getenv("NAVER_ID", "").strip(),
+            naver_pw=os.getenv("NAVER_PW", ""),
             headless=_bool("HEADLESS", True),
             browser_profile_dir=Path(os.getenv("BROWSER_PROFILE_DIR", "").strip() or "data/browser"),
             browser_executable=os.getenv("BROWSER_EXECUTABLE", "").strip() or None,
             include_sources=_bool("INCLUDE_SOURCES", False),
             append_hashtags=_bool("APPEND_HASHTAGS", True),
+            image_count=_int("IMAGE_COUNT", 3),
+            thumbnail_card=_bool("THUMBNAIL_CARD", True),
+            pexels_api_key=os.getenv("PEXELS_API_KEY", "").strip(),
+            font_path=os.getenv("FONT_PATH", "").strip() or None,
+            auto_category=_bool("AUTO_CATEGORY", True),
+            naver_categories=[c.strip() for c in os.getenv("NAVER_CATEGORIES", "").split(",") if c.strip()],
         )

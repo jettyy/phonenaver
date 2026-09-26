@@ -1,27 +1,71 @@
-"""Claude 로 최신 정보 조사 + 네이버 블로그 글 작성."""
+"""Claude 로 사진 분석 + 최신 정보 조사 + 네이버 블로그 글 작성.
+
+API 키 대신 **내가 구독 중인 Claude 계정(Pro/Max)** 으로 동작한다.
+Claude Code CLI(`claude -p`)를 실행해서 결과를 받아오며, CLI 는 `claude` 로그인 정보나
+`claude setup-token` 으로 만든 CLAUDE_CODE_OAUTH_TOKEN 을 사용한다. (구독 사용량 한도가 적용됨)
+"""
 from __future__ import annotations
 
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import anthropic
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from .config import Config
 from .fetcher import Page
+from .images import resize_for_ai
 
 KST = ZoneInfo("Asia/Seoul")
+log = logging.getLogger(__name__)
 
 
 class AIError(RuntimeError):
     pass
 
 
+class ImagePlan(BaseModel):
+    query: str = Field(description="이 자리에 어울리는 사진을 찾을 영어 검색어 2~4단어 (예: 'jeju beach sunset')")
+    card_text: str = Field(description="사진이 없을 때 만들 카드 이미지 문구. 한국어 20자 이내")
+
+
 class BlogPost(BaseModel):
     title: str = Field(description="네이버 블로그 글 제목 (검색 키워드를 앞쪽에, 40자 이내)")
     body_html: str = Field(description="본문 HTML. h2, h3, p, strong, ul, ol, li, a, blockquote, hr, table 만 사용")
     tags: list[str] = Field(description="네이버 태그용 키워드 5~10개, # 없이")
+    images: list[ImagePlan] = Field(
+        description="본문의 [[IMAGE1]], [[IMAGE2]] ... 순서대로 각 자리의 이미지 계획"
+    )
+    category: str = Field(description="카테고리 목록 중 가장 어울리는 이름 그대로. 목록이 없으면 빈 문자열")
+
+
+class PhotoAnalysis(BaseModel):
+    photos: list[str] = Field(
+        description="사진마다 한 항목씩 순서대로: 무엇이 찍혔는지, 장소·제품·브랜드·메뉴 추정, 사진 속 글자(가격표·간판 등), 분위기, 블로그에 쓸 만한 포인트"
+    )
+    overall: str = Field(description="사진 전체로 알 수 있는 상황·주제 요약 (2~4문장)")
+    search_topic: str = Field(description="최신 정보를 검색할 한국어 주제 한 줄. 검색할 것이 없으면 빈 문자열")
+
+    def as_text(self) -> str:
+        lines = [f"사진 {i}: {d}" for i, d in enumerate(self.photos, 1)]
+        return "\n".join(lines + [f"전체: {self.overall}"])
+
+
+class Source(BaseModel):
+    title: str
+    url: str
+
+
+class ResearchOut(BaseModel):
+    notes: str = Field(description="조사 결과 정리 (항목마다 기준 날짜와 출처 URL 포함)")
+    sources: list[Source] = Field(description="참고한 출처 목록")
 
 
 @dataclass
@@ -35,26 +79,108 @@ def today() -> str:
     return f"{now:%Y년 %m월 %d일} ({'월화수목금토일'[now.weekday()]})"
 
 
+def _extract_json(text: str):
+    """응답 텍스트에서 JSON 객체를 꺼낸다 (```json 코드블록 허용)."""
+    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
+    raw = fenced.group(1) if fenced else text[text.find("{"): text.rfind("}") + 1]
+    return json.loads(raw)
+
+
 class Writer:
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.client = anthropic.Anthropic(api_key=cfg.anthropic_api_key) if cfg.anthropic_api_key else anthropic.Anthropic()
+        self.bin = shutil.which(cfg.claude_bin) or cfg.claude_bin
+        self.workdir = cfg.image_dir.parent.resolve() / "claude"
+        self.workdir.mkdir(parents=True, exist_ok=True)
 
-    def _extra(self) -> dict:
-        if not self.cfg.claude_fallback:
-            return {}
-        # 안전 분류기가 거절하면 서버가 권장 모델로 자동 재시도
-        return {
-            "extra_headers": {"anthropic-beta": "server-side-fallback-2026-07-01"},
-            "extra_body": {"fallbacks": "default"},
-        }
+    def _env(self) -> dict:
+        env = dict(os.environ)
+        # API 키가 있으면 CLI 가 구독 대신 API 과금으로 동작하므로 제거
+        env.pop("ANTHROPIC_API_KEY", None)
+        env.pop("ANTHROPIC_AUTH_TOKEN", None)
+        if self.cfg.claude_oauth_token:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = self.cfg.claude_oauth_token
+        return env
+
+    def _run(self, prompt: str, schema: type[BaseModel], tools: list[str], system: str | None = None) -> dict:
+        """claude -p 로 한 번 실행하고, 스키마에 맞는 JSON 을 돌려받는다."""
+        cmd = [
+            self.bin, "-p",
+            "--output-format", "json",
+            "--json-schema", json.dumps(schema.model_json_schema(), ensure_ascii=False),
+            "--no-session-persistence",
+            "--max-turns", str(self.cfg.claude_max_turns),
+            "--tools", ",".join(tools),
+        ]
+        if tools:
+            cmd += ["--allowedTools", ",".join(tools)]
+        if self.cfg.claude_model:
+            cmd += ["--model", self.cfg.claude_model]
+        if system:
+            cmd += ["--system-prompt", system]
+        cmd += ["--add-dir", str(self.cfg.image_dir.resolve())]
+        prompt += "\n\n결과는 지정된 JSON 스키마에 맞춰 반환하세요."
+        try:
+            proc = subprocess.run(
+                cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
+                cwd=self.workdir, env=self._env(), timeout=self.cfg.claude_timeout,
+            )
+        except FileNotFoundError as exc:
+            raise AIError(
+                "Claude Code(claude) 가 설치되어 있지 않습니다. `npm install -g @anthropic-ai/claude-code` 후 "
+                "`claude` 를 실행해 구독 계정으로 로그인하세요."
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise AIError(f"Claude 응답이 {self.cfg.claude_timeout}초 안에 오지 않았습니다") from exc
+
+        out = proc.stdout.strip()
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError:
+            detail = (proc.stderr or out)[-500:]
+            raise AIError(self._explain(detail)) from None
+        if data.get("is_error") or data.get("subtype", "success") != "success":
+            raise AIError(self._explain(str(data.get("result") or data.get("subtype") or data)))
+
+        result = data.get("structured_output")
+        if result is None:
+            try:
+                result = _extract_json(data.get("result", ""))
+            except (json.JSONDecodeError, ValueError) as exc:
+                raise AIError("Claude 응답에서 결과(JSON)를 찾지 못했습니다") from exc
+        try:
+            schema.model_validate(result)
+        except ValidationError as exc:
+            raise AIError(f"Claude 응답 형식이 맞지 않습니다: {exc.errors()[:2]}") from exc
+        return result
 
     @staticmethod
-    def _check(response) -> None:
-        if response.stop_reason == "refusal":
-            details = getattr(response, "stop_details", None)
-            reason = getattr(details, "explanation", None) or "안전 정책"
-            raise AIError(f"Claude가 요청을 거절했습니다: {reason}")
+    def _explain(detail: str) -> str:
+        low = detail.lower()
+        if any(k in low for k in ("login", "log in", "authenticat", "oauth", "credential", "401")):
+            return (
+                "Claude 구독 계정 로그인이 필요합니다. 이 컴퓨터에서 `claude` 를 실행해 로그인하거나, "
+                "`claude setup-token` 으로 받은 토큰을 .env 의 CLAUDE_CODE_OAUTH_TOKEN 에 넣으세요."
+            )
+        if any(k in low for k in ("usage limit", "rate limit", "limit reached", "429")):
+            return "Claude 구독 사용량 한도에 도달했습니다. 한도가 초기화된 뒤 다시 시도하세요."
+        return f"Claude 실행 실패: {detail.strip()[:300]}"
+
+    def _photo_prompt(self, photos: list[Path]) -> str:
+        paths = [resize_for_ai(p, self.cfg.image_dir / "ai") for p in photos]
+        listing = "\n".join(f"- 사진 {i}: {p.resolve()}" for i, p in enumerate(paths, 1))
+        return f"[사용자가 보낸 사진] Read 도구로 아래 파일을 모두 열어 직접 보고 참고하세요.\n{listing}"
+
+    # ── 0단계: 보낸 사진 분석 ─────────────────────────────────
+    def analyze_photos(self, photos: list[Path], instruction: str) -> PhotoAnalysis:
+        prompt = (
+            f"오늘은 {today()}입니다. 아래 사진 {len(photos)}장은 네이버 블로그 글에 쓸 자료입니다.\n"
+            f"{self._photo_prompt(photos)}\n\n"
+            "사진을 꼼꼼히 분석해 주세요. 확실하지 않은 추정은 '~로 보임'이라고 표시하고, "
+            "사진 속 글자(메뉴판, 가격, 간판, 제품명)는 정확히 옮겨 적으세요.\n\n"
+            f"사용자 지시: {instruction or '(없음)'}"
+        )
+        return PhotoAnalysis.model_validate(self._run(prompt, PhotoAnalysis, tools=["Read"]))
 
     # ── 1단계: 최신 정보 조사 (웹 검색) ─────────────────────────
     def research(self, topic: str) -> Research:
@@ -62,45 +188,14 @@ class Writer:
             f"오늘은 {today()}입니다.\n"
             "아래 주제로 네이버 블로그 글을 쓰려고 합니다. 웹 검색으로 가장 최신 정보를 조사해서 "
             "글 작성에 필요한 사실, 수치, 날짜, 가격, 일정, 변경 사항 등을 한국어로 정리해 주세요.\n"
+            f"- 검색은 {self.cfg.max_searches}번 이내로 하세요.\n"
             "- 오래된 정보와 최신 정보가 다르면 최신 기준으로, 기준 날짜를 함께 적어 주세요.\n"
             "- 확인되지 않은 내용은 '미확인'으로 표시하세요.\n"
             "- 각 항목 뒤에 근거 출처 URL을 적어 주세요.\n\n"
             f"주제/지시: {topic}"
         )
-        tools = [{
-            "type": "web_search_20260209",
-            "name": "web_search",
-            "max_uses": self.cfg.max_searches,
-            "user_location": {"type": "approximate", "country": "KR", "timezone": "Asia/Seoul"},
-        }]
-        messages: list[dict] = [{"role": "user", "content": prompt}]
-        response = None
-        for _ in range(5):
-            response = self.client.messages.create(
-                model=self.cfg.claude_model,
-                max_tokens=16000,
-                tools=tools,
-                messages=messages,
-                **self._extra(),
-            )
-            if response.stop_reason != "pause_turn":
-                break
-            # 서버 측 검색이 길어져 잠시 멈춘 경우 이어서 진행
-            messages = [messages[0], {"role": "assistant", "content": response.content}]
-        assert response is not None
-        self._check(response)
-
-        notes, sources, seen = [], [], set()
-        for block in response.content:
-            if block.type == "text":
-                notes.append(block.text)
-            elif block.type == "web_search_tool_result" and isinstance(block.content, list):
-                for item in block.content:
-                    url = getattr(item, "url", None)
-                    if url and url not in seen:
-                        seen.add(url)
-                        sources.append((getattr(item, "title", "") or url, url))
-        return Research(notes="\n".join(notes).strip(), sources=sources)
+        data = ResearchOut.model_validate(self._run(prompt, ResearchOut, tools=["WebSearch", "WebFetch"]))
+        return Research(notes=data.notes, sources=[(s.title or s.url, s.url) for s in data.sources])
 
     # ── 2단계: 블로그 글 작성 ─────────────────────────────────
     def write(
@@ -109,8 +204,18 @@ class Writer:
         research: Research | None,
         pages: list[Page],
         insert_urls: list[str],
+        image_count: int = 0,
+        categories: list[str] | None = None,
+        user_photo_count: int = 0,
+        photos: list[Path] | None = None,
+        photo_analysis: PhotoAnalysis | None = None,
     ) -> BlogPost:
         parts = [f"오늘 날짜: {today()}", f"[사용자 지시]\n{instruction or '(지시 없음 - 링크 내용으로 글 작성)'}"]
+        if photo_analysis:
+            parts.append(
+                "[사용자가 보낸 사진 분석]\n" + photo_analysis.as_text() + "\n"
+                "사진에서 확인한 내용(장소, 메뉴, 가격, 제품 특징, 분위기 등)을 글에 구체적으로 반영하세요."
+            )
         if research and research.notes:
             parts.append(f"[최신 정보 조사 결과]\n{research.notes}")
         for i, page in enumerate(pages, 1):
@@ -130,20 +235,33 @@ class Writer:
             )
         else:
             parts.append("[링크 규칙] 사용자가 넣으라고 한 링크가 없으므로 본문에 외부 링크를 넣지 마세요.")
+        if image_count:
+            markers = ", ".join(f"[[IMAGE{i}]]" for i in range(1, image_count + 1))
+            photo_note = (
+                f"\n[[IMAGE1]]~[[IMAGE{user_photo_count}]] 에는 사용자가 보낸 사진 1~{user_photo_count} 이 "
+                "순서대로 들어갑니다. 각 표시는 그 사진 내용을 설명하는 문단 바로 앞이나 뒤에 두세요. "
+                "나머지 자리는 글 내용에 맞는 이미지 계획을 세우세요."
+                if user_photo_count else ""
+            )
+            parts.append(
+                f"[이미지 {image_count}장]\n본문에 {markers} 를 각각 독립된 <p> 문단으로 한 번씩 넣어 "
+                "이미지가 들어갈 자리를 표시하세요. 첫 이미지는 도입부 바로 뒤, 나머지는 내용이 바뀌는 소제목 근처에 "
+                f"고르게 배치합니다. images 에는 순서대로 {image_count}개의 계획을 적으세요." + photo_note
+            )
+        if categories:
+            listing = "\n".join(f"- {c}" for c in categories)
+            parts.append(
+                "[내 블로그 카테고리]\n" + listing + "\n"
+                "글 내용에 가장 잘 어울리는 카테고리 하나를 골라 category 에 목록의 이름 그대로 적으세요. "
+                "사용자가 카테고리를 지정했다면 그것을 따릅니다."
+            )
 
-        response = self.client.messages.parse(
-            model=self.cfg.claude_model,
-            max_tokens=16000,
-            system=WRITER_SYSTEM,
-            messages=[{"role": "user", "content": "\n\n".join(parts)}],
-            output_format=BlogPost,
-            **self._extra(),
-        )
-        self._check(response)
-        post = response.parsed_output
-        if post is None:
-            raise AIError(f"글 생성 결과를 읽지 못했습니다 (stop_reason={response.stop_reason})")
-        return post
+        if photos and not user_photo_count:
+            parts.append("[사진 사용 규칙] 보낸 사진은 내용 참고용입니다. 글에 첨부되지 않으니 '아래 사진처럼' 같은 표현은 쓰지 마세요.")
+        if photos:
+            parts.insert(0, self._photo_prompt(photos))
+        data = self._run("\n\n".join(parts), BlogPost, tools=["Read"] if photos else [], system=WRITER_SYSTEM)
+        return BlogPost.model_validate(data)
 
 
 WRITER_SYSTEM = """당신은 네이버 블로그 상위노출 경험이 많은 한국어 블로그 작가입니다.
@@ -162,5 +280,5 @@ WRITER_SYSTEM = """당신은 네이버 블로그 상위노출 경험이 많은 �
 
 형식 규칙
 - body_html 에는 제목(h1)을 넣지 않습니다. 허용 태그: h2, h3, p, br, strong, em, u, ul, ol, li, a, blockquote, hr, table, tr, th, td.
-- 이미지, 이모지 남용, 마크다운 문법(**, ##)은 쓰지 않습니다.
+- <img> 태그, 이모지 남용, 마크다운 문법(**, ##)은 쓰지 않습니다. 이미지 자리는 [[IMAGEn]] 표시로만 나타냅니다.
 - tags 는 검색에 쓰일 핵심 키워드 5~10개 (# 없이)."""

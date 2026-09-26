@@ -4,7 +4,8 @@
   login               브라우저 창을 띄워 네이버에 직접 로그인 (최초 1회, PC)
   import-cookies F    PC에서 내보낸 쿠키 JSON 을 서버 프로필에 넣기
   check               로그인 세션 확인
-  write "지시"         터미널에서 바로 글쓰기+임시저장 (--dry 로 미리보기만)
+  categories          내 블로그 카테고리 목록 새로고침
+  write "지시"         터미널에서 바로 글쓰기+임시저장 (--dry 미리보기, --photo 사진 첨부)
 """
 from __future__ import annotations
 
@@ -24,11 +25,13 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("bot")
     sub.add_parser("login")
     sub.add_parser("check")
+    sub.add_parser("categories")
     p_cookie = sub.add_parser("import-cookies")
     p_cookie.add_argument("file", type=Path)
     p_write = sub.add_parser("write")
     p_write.add_argument("text")
     p_write.add_argument("--dry", action="store_true", help="임시저장하지 않고 결과만 출력")
+    p_write.add_argument("--photo", type=Path, action="append", default=[], help="글에 넣을 내 사진 (여러 번 가능)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -53,6 +56,10 @@ def main(argv: list[str] | None = None) -> int:
         n = asyncio.run(naver.import_cookies(cfg, args.file))
         print(f"쿠키 {n}개를 저장했습니다.")
         return 0
+    if args.cmd == "categories":
+        cats = asyncio.run(naver.NaverBlog(cfg).categories(refresh=True))
+        print("\n".join(f"- {c.label} (번호 {c.no})" for c in cats) or "카테고리를 찾지 못했습니다.")
+        return 0 if cats else 1
     if args.cmd == "write":
         from .html_utils import html_to_text
         from .pipeline import Pipeline
@@ -61,8 +68,13 @@ def main(argv: list[str] | None = None) -> int:
             print(msg)
 
         text = ("/test " + args.text) if args.dry else args.text
-        result = asyncio.run(Pipeline(cfg).run(text, progress))
+        result = asyncio.run(Pipeline(cfg).run(text, progress, photos=args.photo))
         print("\n제목:", result.post.title)
+        print("카테고리:", result.category.label if result.category else "기본")
+        for img in result.images:
+            print(f"이미지({img.source}):", img.path)
+        for w in result.warnings:
+            print("⚠️", w)
         print(html_to_text(result.body_html))
         if result.draft:
             print("\n임시저장 완료. 스크린샷:", result.draft.screenshot)

@@ -17,6 +17,13 @@ INSERT_WORDS = ("넣어", "넣고", "삽입", "첨부", "걸어", "걸고", "달
 SEARCH_WORDS = ("검색", "최신", "찾아", "조사", "요즘", "최근")
 RAW_PREFIXES = ("그대로:", "그대로 :", "원문:", "/raw")
 DRY_PREFIXES = ("/test", "/dry", "미리보기:")
+CATEGORY_RE = re.compile(r"카테고리\s*[:：]\s*([^\n,]+?)\s*(?:[,\n]|$)")
+# 보낸 사진을 '분석만' 하고 글에는 첨부하지 않는 표현
+ANALYZE_ONLY_RE = re.compile(
+    r"분석만|참고만|참고용|첨부\s*(?:하지|는\s*하지|말|안|없이|x)|(?:넣지|올리지|붙이지)\s*(?:말|마)",
+    re.IGNORECASE,
+)
+NO_IMAGE_RE = re.compile(r"(이미지|사진)\s*(없이|빼고|넣지\s*마)")
 
 
 @dataclass
@@ -28,6 +35,10 @@ class Command:
     search: bool = True
     raw: bool = False
     dry_run: bool = False
+    category: str | None = None  # "카테고리: 여행" 처럼 직접 지정한 경우
+    no_images: bool = False  # "이미지 없이"
+    # 보낸 사진 처리: "attach" = 분석 + 본문 첨부(기본), "analyze" = 분석해서 내용에만 반영
+    photo_mode: str = "attach"
 
     @property
     def analyze_urls(self) -> list[str]:
@@ -53,10 +64,21 @@ def parse(text: str) -> Command:
             text = text[len(prefix):].strip()
             break
 
+    category = None
+    m = CATEGORY_RE.search(text)
+    if m:
+        category = m.group(1).strip()
+        text = (text[:m.start()] + "\n" + text[m.end():]).strip()
+    no_images = bool(NO_IMAGE_RE.search(text))
+    photo_mode = "analyze" if ANALYZE_ONLY_RE.search(text) else "attach"
+
     for prefix in RAW_PREFIXES:
         if text.lower().startswith(prefix):
             body = text[len(prefix):].strip()
-            return Command(text=body, instruction=body, raw=True, search=False, dry_run=dry_run)
+            return Command(
+                text=body, instruction=body, raw=True, search=False, dry_run=dry_run,
+                category=category, no_images=no_images, photo_mode=photo_mode,
+            )
 
     urls: list[str] = []
     insert_urls: list[str] = []
@@ -88,4 +110,7 @@ def parse(text: str) -> Command:
         insert_urls=insert_urls,
         search=search,
         dry_run=dry_run,
+        category=category,
+        no_images=no_images,
+        photo_mode=photo_mode,
     )

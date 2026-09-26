@@ -12,7 +12,8 @@ import asyncio
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from playwright.async_api import TimeoutError as PWTimeout
 
 from .config import Config
 from .html_utils import html_to_text
+from .images import marker
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +34,21 @@ SELECTORS = {
     # 팝업: '작성 중인 글이 있습니다' → 취소(새 글), 도움말 패널 닫기
     "popup_cancel": ".se-popup-button-cancel",
     "help_close": ".se-help-panel-close-button, button.se-help-close-button",
+    "paragraph": ".se-text-paragraph",
+    # 사진 업로드: 툴바 [사진] 버튼 → 파일 선택
+    "image_button": (
+        "button[data-name='image'], button.se-image-toolbar-button, "
+        "button[class*='image-toolbar-button']"
+    ),
+    "file_input": "input[type='file']",
+    "image_component": ".se-component.se-image, .se-module-image",
+    # 카테고리: [발행] 레이어 안의 카테고리 선택 상자 (발행 확인 버튼은 절대 누르지 않음)
+    "publish_button": "button[class*='publish_btn'], button[data-click-area='tpb.publish']",
+    "publish_layer": "[class*='layer_publish'], [class*='publish_layer']",
+    "publish_layer_close": "[class*='layer_publish'] button[class*='close'], [class*='publish_layer'] button[class*='close']",
+    "category_select": "[class*='option_category'] button, button[class*='selectbox_button']",
+    # 위에서부터 차례로 시도 (label 을 눌러야 선택되는 경우가 많음)
+    "category_option": ["[class*='option_list'] label", "[role='option']", "[class*='option_list'] li"],
     "save_button": (
         "button[class*='save_btn']:not([class*='count']), "
         "button[data-click-area='tpb.save'], "
@@ -40,6 +57,16 @@ SELECTORS = {
 }
 
 LOGIN_HOST = "nid.naver.com"
+LOGIN_URL = "https://nid.naver.com/nidlogin.login?mode=form&url=https%3A%2F%2Fblog.naver.com%2F"
+LOGIN_SELECTORS = {
+    "id": "#id",
+    "pw": "#pw",
+    "keep": "#keep, #stay",
+    "keep_label": "label[for='keep'], label[for='stay'], .keep_check",
+    "submit": "#log\\.login, button.btn_login, button[type='submit']",
+    # 로그인 후 '새로운 기기 등록' 화면
+    "new_device_save": "#new\\.save, a:has-text('등록')",
+}
 
 
 class NaverError(RuntimeError):
@@ -57,6 +84,86 @@ class DraftResult:
     title: str
     screenshot: Path | None
     editor_url: str
+    images_inserted: int = 0
+    category: str | None = None
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Category:
+    name: str
+    no: int | None = None
+    parent: str | None = None
+
+    @property
+    def label(self) -> str:
+        return f"{self.parent} > {self.name}" if self.parent else self.name
+
+
+def parse_category_json(data) -> list[Category]:
+    """블로그 카테고리 API 응답에서 (번호, 이름)을 모두 찾는다. 응답 모양이 바뀌어도 최대한 버티도록 재귀 탐색."""
+    found: list[Category] = []
+
+    def walk(node, parent: str | None = None) -> None:
+        if isinstance(node, dict):
+            name = node.get("categoryName")
+            no = node.get("categoryNo")
+            is_line = node.get("divisionLine") or node.get("isDivisionLine")
+            here = parent
+            if name and no is not None and not is_line and str(no) != "0":
+                found.append(Category(name=str(name).strip(), no=int(no), parent=parent))
+                here = str(name).strip()
+            for value in node.values():
+                if isinstance(value, (list, dict)):
+                    walk(value, here)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, parent)
+
+    walk(data)
+    # parentCategoryNo 로 부모를 알려주는 형식 처리
+    by_no = {c.no: c.name for c in found}
+
+    def fix(node) -> None:
+        if isinstance(node, dict):
+            pno = node.get("parentCategoryNo")
+            if pno and node.get("categoryNo") is not None:
+                for c in found:
+                    if c.no == int(node["categoryNo"]) and c.parent is None and int(pno) in by_no:
+                        c.parent = by_no[int(pno)]
+            for value in node.values():
+                fix(value)
+        elif isinstance(node, list):
+            for item in node:
+                fix(item)
+
+    fix(data)
+    unique: dict[int | None, Category] = {}
+    for c in found:
+        unique.setdefault(c.no, c)
+    return list(unique.values())
+
+
+def match_category(name: str | None, categories: list[Category]) -> Category | None:
+    """AI 가 고른 이름을 실제 카테고리와 맞춘다 (공백·대소문자·'부모 > 자식' 표기 허용)."""
+    if not name:
+        return None
+
+    def norm(x: str) -> str:
+        return re.sub(r"\s+", "", x).lower()
+
+    target = norm(name)
+    for c in categories:
+        if norm(c.name) == target or norm(c.label) == target:
+            return c
+    tail = norm(name.split(">")[-1])
+    for c in categories:
+        if norm(c.name) == tail:
+            return c
+    for c in categories:
+        if tail and (tail in norm(c.name) or norm(c.name) in tail):
+            return c
+    return None
 
 
 def _launch_args(cfg: Config, headless: bool) -> dict:
@@ -76,7 +183,7 @@ def _launch_args(cfg: Config, headless: bool) -> dict:
 async def _open(pw, cfg: Config, headless: bool) -> BrowserContext:
     cfg.browser_profile_dir.mkdir(parents=True, exist_ok=True)
     ctx = await pw.chromium.launch_persistent_context(**_launch_args(cfg, headless))
-    await ctx.grant_permissions(["clipboard-read", "clipboard-write"], origin="https://blog.naver.com")
+    await ctx.grant_permissions(["clipboard-read", "clipboard-write"])
     return ctx
 
 
@@ -87,8 +194,15 @@ async def interactive_login(cfg: Config, timeout_s: int = 300) -> bool:
     async with async_playwright() as pw:
         ctx = await _open(pw, cfg, headless=False)
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-        await page.goto("https://nid.naver.com/nidlogin.login?url=https://blog.naver.com")
-        print(f"브라우저 창에서 네이버에 로그인하세요. ({timeout_s}초 대기, '로그인 상태 유지' 체크 추천)")
+        await page.goto(LOGIN_URL)
+        if cfg.naver_id and cfg.naver_pw:
+            print(".env 의 아이디/비밀번호로 로그인합니다. 캡차나 2단계 인증이 나오면 창에서 직접 처리하세요.")
+            try:
+                await auto_login(page, cfg, wait_s=timeout_s)
+            except NotLoggedIn:
+                pass
+        else:
+            print(f"브라우저 창에서 네이버에 로그인하세요. ({timeout_s}초 대기, '로그인 상태 유지' 체크 추천)")
         for _ in range(timeout_s):
             if await _has_login_cookie(ctx):
                 print("로그인 확인! 세션을 저장했습니다.")
@@ -141,6 +255,60 @@ async def _has_login_cookie(ctx: BrowserContext) -> bool:
     return any(c["name"] == "NID_AUT" for c in cookies)
 
 
+async def _paste_into(page: Page, selector: str, value: str) -> None:
+    """아이디/비밀번호를 한 글자씩 치지 않고 붙여넣는다 (자동입력 방지 캡차를 덜 부름)."""
+    field_el = page.locator(selector).first
+    await field_el.click()
+    try:
+        await page.evaluate("v => navigator.clipboard.writeText(v)", value)
+        await page.keyboard.press("ControlOrMeta+V")
+        await asyncio.sleep(0.3)
+    except Exception:
+        pass
+    if await field_el.input_value() != value:
+        await field_el.fill(value)
+    await page.evaluate("() => navigator.clipboard.writeText('')")  # 클립보드에 비밀번호 남기지 않기
+
+
+async def auto_login(page: Page, cfg: Config, wait_s: int = 90) -> None:
+    """NAVER_ID / NAVER_PW 로 로그인. 캡차·2단계 인증이 뜨면 wait_s 동안 기다린다(네이버 앱 승인 등)."""
+    if not (cfg.naver_id and cfg.naver_pw):
+        raise NotLoggedIn(
+            "네이버 로그인이 필요합니다. .env 에 NAVER_ID / NAVER_PW 를 넣거나 "
+            "`python -m phonenaver login` 으로 한 번 로그인하세요."
+        )
+    ctx = page.context
+    log.info("네이버 자동 로그인 시도")
+    await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+    await _paste_into(page, LOGIN_SELECTORS["id"], cfg.naver_id)
+    await _paste_into(page, LOGIN_SELECTORS["pw"], cfg.naver_pw)
+    try:  # 로그인 상태 유지
+        keep = page.locator(LOGIN_SELECTORS["keep"]).first
+        if await keep.count() and not await keep.is_checked():
+            await page.locator(LOGIN_SELECTORS["keep_label"]).first.click()
+    except Exception:
+        pass
+    await page.locator(LOGIN_SELECTORS["submit"]).first.click()
+
+    for _ in range(wait_s):
+        await asyncio.sleep(1)
+        if await _has_login_cookie(ctx) and LOGIN_HOST not in page.url:
+            log.info("네이버 로그인 성공")
+            return
+        try:
+            new_device = page.locator(LOGIN_SELECTORS["new_device_save"])
+            if LOGIN_HOST in page.url and await new_device.count() and await new_device.first.is_visible():
+                await new_device.first.click()
+        except Exception:
+            pass
+        if await _has_login_cookie(ctx):
+            return
+    raise NotLoggedIn(
+        "네이버 자동 로그인에 실패했습니다. 아이디/비밀번호를 확인하거나, 캡차·2단계 인증이 뜬 경우 "
+        "PC에서 `python -m phonenaver login` 으로 한 번 직접 로그인하세요. (네이버 앱 로그인 승인 요청이 오면 승인)"
+    )
+
+
 async def check_login(cfg: Config) -> bool:
     async with async_playwright() as pw:
         ctx = await _open(pw, cfg, headless=True)
@@ -159,13 +327,83 @@ class NaverBlog:
         self.cfg = cfg
         self._lock = asyncio.Lock()  # 브라우저 프로필은 동시에 하나만 열 수 있음
 
-    async def save_draft(self, title: str, body_html: str) -> DraftResult:
+    # ── 카테고리 목록 ──
+    @property
+    def _category_cache(self) -> Path:
+        return self.cfg.browser_profile_dir.parent / f"categories-{self.cfg.naver_blog_id}.json"
+
+    async def categories(self, refresh: bool = False) -> list[Category]:
+        """내 블로그 카테고리 목록 (하루 동안 캐시). NAVER_CATEGORIES 가 있으면 그것을 사용."""
+        if self.cfg.naver_categories:
+            return [Category(name=n) for n in self.cfg.naver_categories]
+        cache = self._category_cache
+        if not refresh and cache.exists():
+            data = json.loads(cache.read_text(encoding="utf-8"))
+            if time.time() - data.get("fetched", 0) < 86400 and data.get("items"):
+                return [Category(**c) for c in data["items"]]
+        async with self._lock:
+            async with async_playwright() as pw:
+                ctx = await _open(pw, self.cfg, headless=True)
+                try:
+                    items = await self._fetch_categories(ctx)
+                finally:
+                    await ctx.close()
+        if items:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(
+                json.dumps({"fetched": time.time(), "items": [c.__dict__ for c in items]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        return items
+
+    async def _fetch_categories(self, ctx: BrowserContext) -> list[Category]:
+        blog_id = self.cfg.naver_blog_id
+        if not await _has_login_cookie(ctx):
+            await auto_login(ctx.pages[0] if ctx.pages else await ctx.new_page(), self.cfg)
+        for url in (
+            f"https://m.blog.naver.com/api/blogs/{blog_id}/category-list",
+            f"https://blog.naver.com/WidgetListAsync.naver?blogId={blog_id}&listNumVisitor=1&isCategoryOpen=true",
+        ):
+            try:
+                resp = await ctx.request.get(url, headers={"Referer": f"https://m.blog.naver.com/{blog_id}"})
+                if resp.ok:
+                    text = await resp.text()
+                    items = parse_category_json(json.loads(text[text.find("{"):]))
+                    if items:
+                        return items
+            except Exception as exc:  # 형식이 다르면 다음 방법으로
+                log.info("카테고리 API 실패 %s: %s", url, exc)
+        # 마지막 수단: 에디터의 [발행] 레이어에서 카테고리 이름 읽기
+        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+        await page.goto(f"https://blog.naver.com/{blog_id}?Redirect=Write&", wait_until="domcontentloaded")
+        frame = await self._editor_frame(page)
+        await self._dismiss_popups(frame)
+        scope = await self._open_publish_layer(page, frame)
+        if scope is None:
+            return []
+        await scope.locator(SELECTORS["category_select"]).first.click()
+        await asyncio.sleep(0.8)
+        names: list[str] = []
+        for sel in SELECTORS["category_option"]:
+            names = [n.strip() for n in await scope.locator(sel).all_inner_texts()]
+            if names:
+                break
+        return [Category(name=n) for n in dict.fromkeys(n for n in names if n)]
+
+    # ── 임시저장 ──
+    async def save_draft(
+        self,
+        title: str,
+        body_html: str,
+        images: list[Path] | None = None,
+        category: Category | None = None,
+    ) -> DraftResult:
         async with self._lock:
             async with async_playwright() as pw:
                 ctx = await _open(pw, self.cfg, headless=self.cfg.headless)
                 page = ctx.pages[0] if ctx.pages else await ctx.new_page()
                 try:
-                    return await self._save(page, title, body_html)
+                    return await self._save(page, title, body_html, images or [], category)
                 except NaverError as exc:
                     if exc.screenshot is None:
                         exc.screenshot = await self._shot(page, "error")
@@ -175,12 +413,18 @@ class NaverBlog:
                 finally:
                     await ctx.close()
 
-    async def _save(self, page: Page, title: str, body_html: str) -> DraftResult:
-        await page.goto(
-            f"https://blog.naver.com/{self.cfg.naver_blog_id}?Redirect=Write&", wait_until="domcontentloaded"
-        )
-        if LOGIN_HOST in page.url:
-            raise NotLoggedIn("네이버 로그인이 필요합니다. PC에서 `python -m phonenaver login` 을 실행하세요.")
+    async def _save(
+        self, page: Page, title: str, body_html: str, images: list[Path], category: Category | None
+    ) -> DraftResult:
+        url = f"https://blog.naver.com/{self.cfg.naver_blog_id}?Redirect=Write&"
+        if category and category.no:
+            url += f"categoryNo={category.no}"  # 카테고리를 미리 선택한 채로 에디터 열기
+        if not await _has_login_cookie(page.context):
+            await auto_login(page, self.cfg)
+        await page.goto(url, wait_until="domcontentloaded")
+        if LOGIN_HOST in page.url:  # 쿠키가 만료된 경우
+            await auto_login(page, self.cfg)
+            await page.goto(url, wait_until="domcontentloaded")
 
         frame = await self._editor_frame(page)
         await self._dismiss_popups(frame)
@@ -203,9 +447,119 @@ class NaverBlog:
             await body_el.click()
             await page.keyboard.insert_text(plain)
 
+        result = DraftResult(title=title, screenshot=None, editor_url=page.url)
+
+        # 이미지: 본문의 [[IMAGEn]] 자리에 하나씩 업로드
+        for i, path in enumerate(images, 1):
+            try:
+                if await self._insert_image(page, frame, i, path):
+                    result.images_inserted += 1
+                else:
+                    result.warnings.append(f"이미지 {i} 자리 표시를 찾지 못함")
+            except Exception as exc:
+                log.warning("이미지 %d 업로드 실패: %s", i, exc)
+                result.warnings.append(f"이미지 {i} 업로드 실패")
+        await self._remove_leftover_markers(page, frame)
+
+        # 카테고리
+        if category:
+            try:
+                if await self._select_category(page, frame, category):
+                    result.category = category.label
+                elif category.no:
+                    result.category = category.label + " (주소로 지정)"
+                else:
+                    result.warnings.append(f"카테고리 '{category.name}' 선택 실패 → 기본 카테고리")
+            except Exception as exc:
+                log.warning("카테고리 선택 실패: %s", exc)
+                result.warnings.append(f"카테고리 '{category.name}' 선택 실패")
+
         await self._click_save(page, frame)
-        shot = await self._shot(page, "saved")
-        return DraftResult(title=title, screenshot=shot, editor_url=page.url)
+        result.screenshot = await self._shot(page, "saved")
+        return result
+
+    async def _find_marker(self, frame: Frame | Page, i: int):
+        loc = frame.locator(SELECTORS["paragraph"], has_text=marker(i))
+        return loc.first if await loc.count() else None
+
+    async def _clear_paragraph(self, page: Page, para) -> None:
+        """표시 문구가 든 문단을 비우고 커서를 그 자리에 둔다."""
+        await para.click()
+        await page.keyboard.press("End")
+        text = await para.inner_text()
+        for _ in range(len(text.strip())):
+            await page.keyboard.press("Backspace")
+
+    async def _insert_image(self, page: Page, frame: Frame | Page, i: int, path: Path) -> bool:
+        para = await self._find_marker(frame, i)
+        if para is None:
+            return False
+        await self._clear_paragraph(page, para)
+        images = frame.locator(SELECTORS["image_component"])
+        before = await images.count()
+        try:
+            async with page.expect_file_chooser(timeout=8000) as chooser:
+                await frame.locator(SELECTORS["image_button"]).first.click()
+            await (await chooser.value).set_files(str(path))
+        except PWTimeout:
+            # 파일 선택창 대신 숨은 input 을 쓰는 경우
+            await frame.locator(SELECTORS["file_input"]).last.set_input_files(str(path))
+        for _ in range(60):  # 업로드 완료 대기 (최대 30초)
+            if await images.count() > before:
+                await asyncio.sleep(1)
+                return True
+            await asyncio.sleep(0.5)
+        raise NaverError(f"이미지 {i} 업로드가 끝나지 않았습니다")
+
+    async def _remove_leftover_markers(self, page: Page, frame: Frame | Page) -> None:
+        for _ in range(20):
+            loc = frame.locator(SELECTORS["paragraph"], has_text=re.compile(r"\[\[IMAGE\d+\]\]"))
+            if not await loc.count():
+                return
+            await self._clear_paragraph(page, loc.first)
+
+    async def _open_publish_layer(self, page: Page, frame: Frame | Page) -> Frame | Page | None:
+        for scope in (frame, page):
+            btn = scope.locator(SELECTORS["publish_button"])
+            if await btn.count():
+                await btn.first.click()
+                await asyncio.sleep(1.5)
+                return scope
+        return None
+
+    async def _close_publish_layer(self, page: Page, scope: Frame | Page) -> None:
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.5)
+        layer = scope.locator(SELECTORS["publish_layer"])
+        if await layer.count() and await layer.first.is_visible():
+            close = scope.locator(SELECTORS["publish_layer_close"])
+            if await close.count():
+                await close.first.click()
+            else:
+                await scope.locator(SELECTORS["publish_button"]).first.click()  # 토글로 닫기
+            await asyncio.sleep(0.5)
+
+    async def _select_category(self, page: Page, frame: Frame | Page, category: Category) -> bool:
+        """[발행] 레이어를 열어 카테고리만 고르고 닫는다. 발행 확인 버튼은 누르지 않는다."""
+        scope = await self._open_publish_layer(page, frame)
+        if scope is None:
+            return False
+        try:
+            select = scope.locator(SELECTORS["category_select"])
+            if not await select.count():
+                return False
+            await select.first.click()
+            await asyncio.sleep(0.8)
+            name_re = re.compile(rf"^\s*{re.escape(category.name)}\s*$")
+            for sel in SELECTORS["category_option"]:
+                option = scope.locator(sel).filter(has_text=name_re)
+                if await option.count():
+                    await option.first.click()
+                    await asyncio.sleep(0.5)
+                    return True
+            return False
+        finally:
+            await self._close_publish_layer(page, scope)
 
     async def _editor_frame(self, page: Page) -> Frame | Page:
         """글쓰기 화면은 mainFrame iframe 안에 있거나(구형) 페이지에 바로 있다."""

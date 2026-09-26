@@ -46,3 +46,19 @@ def test_raw_and_dry():
     cmd = parse("/test 그대로: 제목입니다\n본문 첫줄")
     assert cmd.raw and cmd.dry_run
     assert cmd.text.splitlines()[0] == "제목입니다"
+
+
+def test_category_and_no_images():
+    cmd = parse("카테고리: 여행 이야기\n제주 한달살기 후기 써줘, 사진 없이")
+    assert cmd.category == "여행 이야기"
+    assert "카테고리" not in cmd.instruction
+    assert cmd.no_images
+    assert not parse("제주 여행 글").no_images
+
+
+def test_photo_modes():
+    assert parse("이 사진들 첨부해서 카페 후기 써줘").photo_mode == "attach"
+    assert parse("사진 분석해서 글 써줘").photo_mode == "attach"  # 기본은 첨부
+    for text in ("사진은 분석만 하고 글 써줘", "이미지 분석해서 쓰고 첨부는 하지 마",
+                 "사진 참고만 해서 써줘", "사진은 넣지 말고 내용만 반영해줘"):
+        assert parse(text).photo_mode == "analyze", text
