@@ -96,7 +96,7 @@ function renderConnect(msg) {
 
 // ── 설정 ─────────────────────────────────
 const BOOLS = ['IMAGE_PER_SECTION', 'THUMBNAIL_CARD', 'AUTO_CATEGORY', 'APPEND_HASHTAGS', 'INCLUDE_SOURCES', 'HEADLESS'];
-const VALUES = ['IMAGE_COUNT', 'MAX_IMAGES', 'PARAGRAPH_GAP', 'MAX_SEARCHES'];
+const VALUES = ['IMAGE_COUNT', 'MAX_IMAGES', 'PARAGRAPH_GAP', 'POST_DELAY_MIN', 'POST_DELAY_MAX', 'MAX_SEARCHES'];
 
 function renderSettings(s) {
   if (!s) return;

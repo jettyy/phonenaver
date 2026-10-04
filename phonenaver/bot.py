@@ -13,7 +13,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 from . import html_utils, images
 from .config import Config
-from .jobs import JobRunner
+from .jobs import ChannelResult, JobRunner
 from .naver import NaverBlog, NaverError, NotLoggedIn
 
 log = logging.getLogger(__name__)
@@ -34,6 +34,8 @@ HELP = """📝 네이버 블로그 자동 글쓰기 봇
    예) https://... 이거 분석해서 후기 글로 써줘
    🎬 유튜브 링크 → 영상 대사(자막)를 끝까지 읽고 분석해서 작성
    예) https://youtu.be/... 이 영상 내용으로 블로그 글 써줘
+   📺 유튜브 채널 링크 → 최근 6개월 영상마다 글 하나씩 (이미 쓴 영상은 건너뜀)
+   예) https://www.youtube.com/@채널이름   (최근 3개월 / 10개만 처럼 바꿀 수 있음)
 
 3) 링크를 글에 넣기 → '넣어/삽입/걸어' 라고 말하기
    예) 제주 한달살기 준비물 글 써줘. 이 링크 넣어줘 https://...
@@ -160,6 +162,10 @@ def build_app(get_cfg, runner: JobRunner) -> Application:
             await status.edit_text(f"❌ 실패: {exc}")
             return
 
+        if isinstance(result, ChannelResult):
+            await report_channel(chat, context, status, tag, result)
+            return
+
         plain = images.strip_markers(html_utils.html_to_text(result.body_html))
         lines = [f"✅ {'미리보기 (저장 안 함)' if result.command.dry_run else '임시저장 완료'}",
                  f"제목: {result.post.title}", f"분량: 약 {len(plain):,}자"]
@@ -192,6 +198,30 @@ def build_app(get_cfg, runner: JobRunner) -> Application:
         elif result.draft and result.draft.screenshot:
             with open(result.draft.screenshot, "rb") as f:
                 await context.bot.send_photo(chat, f, caption=tag + "네이버 앱 > 글쓰기 > 임시저장 글에서 확인·발행하세요")
+
+    async def report_channel(chat, context, status, tag: str, result: ChannelResult) -> None:
+        """유튜브 채널 요청: 몇 개를 넣었는지 알리고, 글이 하나 끝날 때마다 짧게 알린다."""
+        total = len(result.children)
+        head = f"📺 {result.channel}\n최근 {result.months}개월 영상 {result.found}개 → 글 {total}개를 차례로 씁니다"
+        if result.skipped:
+            head += f"\n(이미 쓴 영상 {result.skipped}개는 건너뜀)"
+        if not total:
+            head += "\n새로 쓸 영상이 없습니다."
+        await status.edit_text(head)
+        ok = 0
+        for i, child in enumerate(result.children, 1):
+            try:
+                r = await runner.wait(child)
+                ok += 1
+                await context.bot.send_message(chat, f"{tag}✅ ({i}/{total}) {r.post.title}")
+            except asyncio.CancelledError:
+                await context.bot.send_message(chat, f"{tag}⏹ ({i}/{total}) 취소됨")
+            except NotLoggedIn:
+                await context.bot.send_message(chat, f"{tag}🔒 ({i}/{total}) 네이버 로그인이 풀려 멈췄습니다. 대시보드에서 로그인 후 [다시] 를 눌러 주세요.")
+            except Exception as exc:
+                await context.bot.send_message(chat, f"{tag}❌ ({i}/{total}) 실패: {str(exc)[:200]}")
+        if total:
+            await context.bot.send_message(chat, f"{tag}📺 채널 글쓰기 끝: {ok}/{total}개 완료")
 
     def buffer_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str = "", photo: Path | None = None) -> None:
         """휴대폰에서 연달아 온 메시지를 모아 하나의 요청으로 처리한다.

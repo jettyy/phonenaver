@@ -35,6 +35,8 @@ SETTINGS = {
     "IMAGE_PER_SECTION": "bool",
     "MAX_IMAGES": "int",
     "PARAGRAPH_GAP": "int",
+    "POST_DELAY_MIN": "int",
+    "POST_DELAY_MAX": "int",
     "THUMBNAIL_CARD": "bool",
     "PEXELS_API_KEY": "secret",
     "APPEND_HASHTAGS": "bool",
@@ -70,7 +72,8 @@ class State:
         cfg = self.cfg
         env.update({
             "IMAGE_COUNT": cfg.image_count, "IMAGE_PER_SECTION": cfg.image_per_section, "MAX_IMAGES": cfg.max_images,
-            "PARAGRAPH_GAP": cfg.paragraph_gap, "THUMBNAIL_CARD": cfg.thumbnail_card, "APPEND_HASHTAGS": cfg.append_hashtags,
+            "PARAGRAPH_GAP": cfg.paragraph_gap, "POST_DELAY_MIN": cfg.post_delay_min,
+            "POST_DELAY_MAX": cfg.post_delay_max, "THUMBNAIL_CARD": cfg.thumbnail_card, "APPEND_HASHTAGS": cfg.append_hashtags,
             "INCLUDE_SOURCES": cfg.include_sources, "AUTO_CATEGORY": cfg.auto_category, "HEADLESS": cfg.headless,
             "MAX_SEARCHES": cfg.max_searches, "NAVER_BLOG_ID": cfg.naver_blog_id,
         })

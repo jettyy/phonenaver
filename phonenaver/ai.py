@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .config import CLAUDE_MODEL, Config
 from .fetcher import Page
-from .command import LONG_TEXT
+from .command import LONG_TEXT, rank_target
 from .images import resize_for_ai
 
 KST = ZoneInfo("Asia/Seoul")
@@ -215,6 +215,14 @@ class Writer:
             "- 각 항목 뒤에 근거 출처 URL을 적어 주세요.\n\n"
             f"주제/지시: {topic}"
         )
+        rank = rank_target(topic)
+        if rank is not None:
+            upto = f"1위부터 {rank}위까지" if rank else "1위부터 확인되는 마지막 순위까지 (최소 10위 이상)"
+            prompt += (
+                f"\n\n[순위 조사] 이 글은 순위 글입니다. {upto} 순위 목록을 빠짐없이 확보하세요. "
+                "순위마다 이름과 핵심 수치(점수·금액·지표 등)를 적고, 순위의 기준(어느 기관·조사·연도 기준인지)과 출처를 밝히세요. "
+                "자료마다 순위가 다르면 가장 최신·공신력 있는 자료 하나를 기준으로 삼으세요."
+            )
         if len(topic) >= LONG_TEXT:
             prompt = (
                 f"오늘은 {today()}입니다.\n"
@@ -242,8 +250,19 @@ class Writer:
         photos: list[Path] | None = None,
         photo_analysis: PhotoAnalysis | None = None,
         image_layout: str = "fixed",
+        fix_note: str = "",
     ) -> BlogPost:
         parts = [f"오늘 날짜: {today()}", f"[사용자 지시]\n{instruction or '(지시 없음 - 링크 내용으로 글 작성)'}"]
+        rank = rank_target(instruction)
+        if rank is not None:
+            upto = f"1위부터 {rank}위까지" if rank else "1위부터 자료에서 확인되는 마지막 순위까지 (최소 10위 이상)"
+            parts.append(
+                "[순위 글 규칙] 이 글은 순위 글입니다. 반드시 지키세요.\n"
+                f"- 본문 앞쪽(도입부 바로 다음 소제목)에 순위표 <table> 을 넣고, {upto} 한 줄도 빠짐없이 순서대로 넣으세요.\n"
+                "- 표 첫 줄은 <th> 제목 줄, 첫 열은 '순위'(1위, 2위 …), 이어서 이름과 핵심 수치·특징 열을 둡니다.\n"
+                "- '…', '이하 생략', '나머지는' 처럼 중간을 줄이지 마세요. 표 아래에 순위 기준(기관·연도)을 한 줄로 밝히세요.\n"
+                "- 표 다음에는 상위 순위부터 h3 소제목('1위 ○○')으로 하나씩 설명합니다 (항목이 많으면 상위 10개는 자세히, 나머지는 짧게)."
+            )
         if len(instruction) >= LONG_TEXT:
             parts.append(
                 "[긴 글 처리 규칙] 위 [사용자 지시] 는 사용자가 통째로 보낸 글(원문 자료)입니다.\n"
@@ -279,6 +298,12 @@ class Writer:
                 "- 구어체·반복·추임새는 정리하고, 자동 생성 자막의 오타·잘못 들은 단어는 문맥으로 바로잡고, 확실하지 않은 고유명사·수치는 단정하지 마세요.\n"
                 "- 자막을 가져오지 못한 영상은 제목·설명에 있는 정보만 쓰고, 영상 내용을 지어내지 마세요."
             )
+        parts.append(
+            "[표 규칙] 본문에 반드시 <table> 을 1개 이상 넣으세요. 비교·정리·일정·가격·장단점·체크리스트처럼 "
+            "표로 보면 편한 내용을 골라, 첫 줄은 <th> 제목 줄로 만드세요. 표가 없는 글은 다시 쓰게 됩니다."
+        )
+        if fix_note:
+            parts.append(f"[다시 쓰기 요청] 앞서 쓴 글에 문제가 있었습니다. 이번에는 꼭 고치세요:\n{fix_note}")
         if insert_urls:
             links = "\n".join(f"- {u}" for u in insert_urls)
             parts.append(
@@ -336,7 +361,7 @@ WRITER_SYSTEM = """당신은 네이버 블로그 상위노출 경험이 많은 �
 - 친근하고 읽기 쉬운 존댓말(~요, ~습니다 혼용). 광고 티 나는 과장 표현은 피합니다.
 - 도입부 2~3문장에서 독자가 얻을 내용을 먼저 알려 줍니다.
 - 소제목(h2) 3~6개로 구성하고, 필요하면 h3 를 씁니다. 문단은 2~3문장으로 짧게 끊고, 문단마다 <p> 로 나누세요 (빈 줄은 프로그램이 넣습니다).
-- 핵심 수치·날짜·주의 사항은 <strong> 으로 강조하고, 나열은 ul/ol, 비교는 table 을 씁니다.
+- 핵심 수치·날짜·주의 사항은 <strong> 으로 강조하고, 나열은 ul/ol, 비교·정리는 table 을 씁니다. 모든 글에 표가 최소 1개 들어갑니다.
 - 마지막에 요약 또는 한 줄 정리로 마무리합니다.
 - 분량은 사용자가 따로 말하지 않으면 공백 포함 2,000~3,000자.
 - 자료에 없는 사실, 수치, 후기를 지어내지 않습니다. 날짜가 중요한 정보는 기준일을 밝힙니다.

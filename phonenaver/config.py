@@ -67,6 +67,9 @@ class Config:
     max_images: int = 8
     # 문단 사이 빈 줄 수
     paragraph_gap: int = 2
+    # 글을 연달아 저장할 때 글 사이에 쉬는 시간(초)
+    post_delay_min: int = 30
+    post_delay_max: int = 90
     thumbnail_card: bool = True
     pexels_api_key: str = ""
     font_path: str | None = None
@@ -97,6 +100,8 @@ class Config:
             image_per_section=_bool("IMAGE_PER_SECTION", True),
             max_images=_int("MAX_IMAGES", 8),
             paragraph_gap=_int("PARAGRAPH_GAP", 2),
+            post_delay_min=_int("POST_DELAY_MIN", 30),
+            post_delay_max=_int("POST_DELAY_MAX", 90),
             thumbnail_card=_bool("THUMBNAIL_CARD", True),
             pexels_api_key=os.getenv("PEXELS_API_KEY", "").strip(),
             font_path=os.getenv("FONT_PATH", "").strip() or None,

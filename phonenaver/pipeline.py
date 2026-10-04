@@ -131,8 +131,7 @@ class Pipeline:
             research = await asyncio.to_thread(self._writer().research, topic)
 
         await progress("✍️ 글 작성 중...")
-        post = await asyncio.to_thread(
-            self._writer().write,
+        write_args = (
             cmd.instruction + (f"\n(카테고리는 '{cmd.category}' 로 지정)" if cmd.category else ""),
             research,
             pages,
@@ -144,6 +143,20 @@ class Pipeline:
             photo_analysis,
             "section" if per_section else "fixed",
         )
+        post = await asyncio.to_thread(self._writer().write, *write_args)
+        # 표 필수 · 순위 글은 1위부터 끝까지: 어겼으면 그 부분만 짚어 한 번 다시 쓰게 한다
+        problem = html_utils.check_tables(html_utils.sanitize(post.body_html), cmd.rank_target)
+        if problem:
+            await progress("✍️ 표/순위표를 보완해서 다시 쓰는 중...")
+            retry = await asyncio.to_thread(self._writer().write, *write_args, fix_note=problem)
+            def biggest(p) -> int:
+                return max(html_utils.table_rows(html_utils.sanitize(p.body_html)) or [-1])
+
+            if biggest(retry) >= biggest(post):  # 표가 더 잘 들어간 쪽을 쓴다
+                post = retry
+            still = html_utils.check_tables(html_utils.sanitize(post.body_html), cmd.rank_target)
+            if still:
+                warnings.append(still.split(".")[0] + " (다시 써도 부족해서 그대로 저장)")
 
         body = html_utils.sanitize(post.body_html)
         if any(p.ok and p.kind == "youtube" for p in pages):

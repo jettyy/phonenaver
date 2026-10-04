@@ -41,3 +41,17 @@ def test_extract_naver_mobile_fallback():
     )
     title, text = extract(html)
     assert title == "제목" and "본문 내용입니다" in text
+
+
+def test_check_tables():
+    from phonenaver.html_utils import check_tables, table_rows
+
+    no_table = "<p>표 없음</p>"
+    assert "표" in check_tables(no_table, None)
+    rows = "".join(f"<tr><td>{i}위</td><td>x</td></tr>" for i in range(1, 8))
+    t7 = f"<table><tr><th>순위</th><th>이름</th></tr>{rows}</table>"
+    assert table_rows(t7) == [7]
+    assert check_tables(t7, None) == ""            # 일반 글: 표만 있으면 됨
+    assert "10위" in check_tables(t7, 0)           # 순위 글인데 몇 위까지인지 안 정함 → 최소 10줄
+    assert "30위" in check_tables(t7, 30)
+    assert check_tables(t7, 5) == ""

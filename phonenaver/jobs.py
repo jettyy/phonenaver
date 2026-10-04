@@ -22,7 +22,9 @@ from .images import strip_markers
 log = logging.getLogger(__name__)
 
 JOBS_FILE = DATA / "jobs.json"
-KEEP_JOBS = 200
+YOUTUBE_DONE_FILE = DATA / "youtube-done.json"  # 이미 글로 쓴 유튜브 영상 (채널 요청 때 중복 방지)
+# 대기열(대기·진행 중)은 개수 제한 없음. 끝난 작업 기록만 최근 이만큼 보관 (글은 이미 네이버에 저장돼 있음)
+KEEP_FINISHED = 2000
 Progress = Callable[[str], Awaitable[None]]
 
 
@@ -94,11 +96,35 @@ class Job:
     error: str = ""
     screenshot: str = ""
     needs_login: bool = False
+    children: list[str] = field(default_factory=list)  # 유튜브 채널 요청이 만든 영상별 작업
 
     def public(self) -> dict:
         data = asdict(self)
         data["photos"] = len(self.photos)
         return data
+
+
+@dataclass
+class ChannelResult:
+    """유튜브 채널 요청의 결과: 영상마다 글쓰기 작업을 대기열에 넣었다."""
+    channel: str
+    months: int
+    found: int
+    skipped: int
+    children: list[Job]
+
+
+def load_done_videos() -> set[str]:
+    try:
+        return set(json.loads(YOUTUBE_DONE_FILE.read_text(encoding="utf-8")))
+    except Exception:
+        return set()
+
+
+def mark_video_done(video_id: str) -> None:
+    done = load_done_videos() | {video_id}
+    YOUTUBE_DONE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    YOUTUBE_DONE_FILE.write_text(json.dumps(sorted(done)), encoding="utf-8")
 
 
 class JobRunner:
@@ -125,7 +151,10 @@ class JobRunner:
             pass
 
     def _save(self) -> None:
-        items = sorted(self.jobs.values(), key=lambda j: j.created)[-KEEP_JOBS:]
+        active = [j for j in self.jobs.values() if j.status in ("queued", "running")]
+        finished = [j for j in self.jobs.values() if j.status not in ("queued", "running")]
+        finished = sorted(finished, key=lambda j: j.created)[-KEEP_FINISHED:]
+        items = sorted(active + finished, key=lambda j: j.created)  # 대기 중인 작업은 절대 지우지 않는다
         self.jobs = {j.id: j for j in items}
         JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
         JOBS_FILE.write_text(json.dumps([asdict(j) for j in items], ensure_ascii=False, indent=1), encoding="utf-8")
@@ -187,7 +216,10 @@ class JobRunner:
         fut = self._results.get(job.id)
         if fut is None:
             raise RuntimeError("결과를 기다릴 수 없는 작업입니다")
-        return await fut
+        try:
+            return await fut  # 이미 끝난 작업이면 바로 결과가 나온다
+        finally:
+            self._results.pop(job.id, None)
 
     def retry(self, job_id: str) -> Job:
         old = self.jobs[job_id]
@@ -199,7 +231,7 @@ class JobRunner:
             return False
         if job.status == "queued":
             self._update(job, status="canceled", message="취소됨")
-            fut = self._results.pop(job_id, None)
+            fut = self._results.get(job_id)  # 기다리는 쪽이 '취소됨' 을 받을 수 있게 남겨 둔다
             if fut and not fut.done():
                 fut.cancel()
             return True
@@ -226,6 +258,19 @@ class JobRunner:
                 await self._run(job)
             except Exception:  # 작업 하나가 실패해도 대기열은 계속
                 log.exception("작업 처리 중 예상 못한 오류")
+            await self._pause_between_posts(job)
+
+    async def _pause_between_posts(self, job: Job) -> None:
+        """네이버에 연달아 저장하면 어뷰징으로 보일 수 있어서, 다음 글 전에 잠깐 쉰다 (인포러시와 같은 방식)."""
+        import random
+
+        cfg = self.get_cfg()
+        waiting = self._queue is not None and not self._queue.empty()
+        if job.status != "done" or job.dry_run or not waiting or cfg.post_delay_max <= 0:
+            return
+        delay = random.uniform(max(0, cfg.post_delay_min), max(cfg.post_delay_min, cfg.post_delay_max))
+        log.info("⏳ 다음 글까지 %d초 쉽니다 (네이버 연속 저장 방지)", delay)
+        await asyncio.sleep(delay)
 
     async def _run(self, job: Job) -> None:
         from .naver import NaverError, NotLoggedIn
@@ -234,6 +279,13 @@ class JobRunner:
         cfg = self.get_cfg()
         self._update(job, status="running", message="시작")
         callback = self._callbacks.pop(job.id, None)
+
+        from .command import parse
+        from .youtube import is_channel
+
+        if any(is_channel(u) for u in parse(job.text).urls):
+            await self._expand_channel(job, callback)
+            return
 
         async def progress(msg: str) -> None:
             self._update(job, message=msg)
@@ -244,7 +296,7 @@ class JobRunner:
                 except Exception:
                     pass
 
-        fut = self._results.pop(job.id, None)
+        fut = self._results.get(job.id)  # 결과는 기다리는 쪽이 가져갈 때까지 둔다
         try:
             pipe = Pipeline(cfg, self.session)
             result = await pipe.run(job.text, progress, photos=[Path(p) for p in job.photos], photo_mode=job.photo_mode)
@@ -288,5 +340,65 @@ class JobRunner:
             screenshot=str(result.draft.screenshot) if result.draft and result.draft.screenshot else "",
         )
         log.info("✅ %s: %s", job.message, result.post.title)
+        if not result.command.dry_run:  # 유튜브 영상으로 쓴 글은 기록해서 채널 요청 때 다시 안 쓴다
+            from .youtube import video_id
+
+            for url in result.command.urls:
+                vid = video_id(url)
+                if vid:
+                    mark_video_done(vid)
         if fut and not fut.done():
             fut.set_result(result)
+
+    async def _expand_channel(self, job: Job, callback: Progress | None) -> None:
+        """유튜브 채널 요청 → 최근 영상마다 글쓰기 작업 하나씩 대기열에 넣는다."""
+        from .command import DRY_PREFIXES, channel_options, parse
+        from .youtube import is_channel, list_channel_videos
+
+        fut = self._results.get(job.id)  # 결과는 기다리는 쪽이 가져갈 때까지 둔다
+        cmd = parse(job.text)
+        months, limit, rest = channel_options(cmd.instruction)
+        extra = rest if len(rest) >= 6 else "이 영상 내용으로 블로그 글 써줘"  # '글로 써줘' 같은 짧은 말은 기본 지시로
+        prefix = "/test " if job.dry_run else ""
+
+        async def say(msg: str) -> None:
+            self._update(job, message=msg)
+            log.info(msg)
+            if callback:
+                try:
+                    await callback(msg)
+                except Exception:
+                    pass
+
+        children: list[Job] = []
+        found = skipped = 0
+        names = []
+        done = load_done_videos()
+        try:
+            for url in [u for u in cmd.urls if is_channel(u)]:
+                await say(f"📺 채널 영상 목록 확인 중 (최근 {months}개월{f', 최대 {limit}개' if limit else ''})...")
+                name, videos = await asyncio.to_thread(list_channel_videos, url, months, limit)
+                names.append(name or url)
+                found += len(videos)
+                for v in videos:
+                    if v.id in done and not job.dry_run:
+                        skipped += 1
+                        continue
+                    children.append(self.submit(f"{prefix}{v.url}\n{extra}", source=job.source,
+                                                want_result=fut is not None))
+        except Exception as exc:
+            self._update(job, status="failed", message="채널 영상 목록을 가져오지 못함", error=str(exc), finished=time.time())
+            log.error("채널 영상 목록 실패: %s", exc)
+            if fut and not fut.done():
+                fut.set_exception(exc)
+            return
+
+        channel = ", ".join(names)
+        summary = f"📺 {channel}: 최근 {months}개월 영상 {found}개 → 글 {len(children)}개 대기열에 추가"
+        if skipped:
+            summary += f" (이미 쓴 {skipped}개 건너뜀)"
+        self._update(job, status="done", message=summary, title=f"📺 {channel} 최근 {months}개월",
+                     children=[c.id for c in children], finished=time.time())
+        log.info(summary)
+        if fut and not fut.done():
+            fut.set_result(ChannelResult(channel, months, found, skipped, children))

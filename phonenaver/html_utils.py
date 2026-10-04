@@ -70,6 +70,29 @@ def append_links_section(raw_html: str, urls: list[str], heading: str = "관련 
 
 
 
+def table_rows(raw_html: str) -> list[int]:
+    """본문의 표마다 내용 줄 수 (제목 줄 제외)."""
+    soup = BeautifulSoup(raw_html, "html.parser")
+    counts = []
+    for table in soup.find_all("table"):
+        rows = [tr for tr in table.find_all("tr") if tr.find("td")]
+        counts.append(len(rows))
+    return counts
+
+
+def check_tables(raw_html: str, rank: int | None, rank_min: int = 10) -> str:
+    """표·순위표 규칙을 어겼으면 고칠 내용을, 지켰으면 빈 문자열을 돌려준다."""
+    rows = table_rows(raw_html)
+    if not rows or max(rows) == 0:
+        return "본문에 표(<table>)가 없습니다. 내용에 맞는 정리표를 반드시 1개 이상 넣으세요."
+    if rank is not None:
+        need = rank or rank_min
+        if max(rows) < need:
+            return (f"순위표가 {max(rows)}줄뿐입니다. 1위부터 {need}위까지 한 줄도 빠짐없이 순위표에 넣으세요. "
+                    "중간을 줄이거나 '이하 생략' 하지 마세요.")
+    return ""
+
+
 BLOCK_TAGS = {"p", "h2", "h3", "ul", "ol", "table", "blockquote", "hr"}
 # 인포러시에서 실제 네이버 에디터로 검증된 빈 줄 형태
 BLANK = "<p><br></p>"

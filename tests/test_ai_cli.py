@@ -157,3 +157,22 @@ def test_youtube_rules_in_prompt(writer):
     prompt = _calls(writer)[0]["prompt"]
     assert "[유튜브 영상 처리 규칙]" in prompt and "(유튜브 영상)" in prompt and "끝까지표시" in prompt
     assert "출처 언급은 하지 마세요" in prompt and "채널 이름 정도로 한 번 밝혀도" not in prompt
+
+
+def test_missing_table_is_rewritten_once(writer, tmp_path):
+    """표가 없는 글은 '표를 넣으라' 고 짚어서 한 번 다시 쓰게 한다. 순위 글은 순위 규칙도 들어간다."""
+    import asyncio
+
+    from phonenaver.command import parse
+    from phonenaver.pipeline import Pipeline
+
+    cfg = writer.cfg
+    cfg.naver_blog_id = ""
+    result = asyncio.run(Pipeline(cfg).generate(parse("/test 2026 대학 순위 TOP 20 정리")))
+    writes = [c for c in _calls(writer) if "body_html" in c["args"][c["args"].index("--json-schema") + 1]]
+    assert len(writes) == 2  # 처음 + 다시 쓰기
+    assert "[순위 글 규칙]" in writes[0]["prompt"] and "1위부터 20위까지" in writes[0]["prompt"]
+    assert "[다시 쓰기 요청]" in writes[1]["prompt"] and "표" in writes[1]["prompt"]
+    assert any("표" in w for w in result.warnings)  # 가짜 응답은 끝까지 표가 없어서 경고
+    research = [c for c in _calls(writer) if "sources" in c["args"][c["args"].index("--json-schema") + 1]]
+    assert "[순위 조사]" in research[0]["prompt"]

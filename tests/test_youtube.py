@@ -102,3 +102,71 @@ def test_youtube_link_is_analyzed_not_inserted():
     assert cmd.analyze_urls == ["https://youtu.be/AbCdEfGhIjK"] and not cmd.insert_urls
     assert not cmd.search  # '최신/검색' 이라고 하면 추가로 검색
     assert parse("https://youtu.be/AbCdEfGhIjK 최신 정보도 찾아서 써줘").search
+
+
+def test_channel_url_detection():
+    assert youtube.channel_url("https://www.youtube.com/@mychannel") == "https://www.youtube.com/@mychannel/videos"
+    assert youtube.channel_url("https://m.youtube.com/@mychannel/featured") == "https://www.youtube.com/@mychannel/videos"
+    assert youtube.is_channel("https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv")
+    assert not youtube.is_channel("https://www.youtube.com/watch?v=AbCdEfGhIjK")
+    assert not youtube.is_channel("https://youtu.be/AbCdEfGhIjK")
+
+
+def test_channel_request_becomes_one_job_per_video(tmp_path, monkeypatch):
+    """채널 링크 → 최근 영상마다 글 작업 하나씩. 이미 쓴 영상은 건너뛴다."""
+    import asyncio
+
+    from phonenaver import jobs
+    from phonenaver.config import Config
+
+    monkeypatch.setattr(jobs, "JOBS_FILE", tmp_path / "jobs.json")
+    monkeypatch.setattr(jobs, "YOUTUBE_DONE_FILE", tmp_path / "done.json")
+    asked = {}
+
+    def fake_list(url, months, limit):
+        asked.update(url=url, months=months, limit=limit)
+        return "테스트채널", [youtube.ChannelVideo(f"Vid{i:08d}", f"영상 {i}") for i in range(1, 5)]
+
+    monkeypatch.setattr(youtube, "list_channel_videos", fake_list)
+    jobs.mark_video_done("Vid00000002")  # 예전에 이미 쓴 영상
+
+    async def scenario():
+        runner = jobs.JobRunner(lambda: Config(), None, jobs.Events())
+        runner._queue, runner._task = asyncio.Queue(), object()  # 실제 글쓰기는 돌리지 않음
+        job = runner.submit("https://www.youtube.com/@testch 최근 3개월 초보자용으로 쉽게 써줘", source="phone", want_result=True)
+        await runner._run(job)
+        result = await runner.wait(job)
+        return runner, job, result
+
+    runner, job, result = asyncio.run(scenario())
+    assert asked["months"] == 3 and asked["limit"] is None
+    assert isinstance(result, jobs.ChannelResult) and result.found == 4 and result.skipped == 1
+    texts = [c.text for c in result.children]
+    assert len(texts) == 3 and "Vid00000002" not in " ".join(texts)
+    assert texts[0].startswith("https://www.youtube.com/watch?v=Vid00000001") and "초보자용으로 쉽게" in texts[0]
+    assert all(c.status == "queued" and c.source == "phone" for c in result.children)
+    assert job.status == "done" and "글 3개" in job.message and len(job.children) == 3
+
+
+def test_waiting_after_job_finished_or_canceled(tmp_path, monkeypatch):
+    """채널 글들을 차례로 기다릴 때, 먼저 끝난(또는 취소된) 작업의 결과도 받을 수 있어야 한다."""
+    import asyncio
+
+    from phonenaver import jobs
+    from phonenaver.config import Config
+
+    monkeypatch.setattr(jobs, "JOBS_FILE", tmp_path / "jobs.json")
+
+    async def scenario():
+        runner = jobs.JobRunner(lambda: Config(), None, jobs.Events())
+        runner._queue, runner._task = asyncio.Queue(), object()
+        a = runner.submit("글 A", want_result=True)
+        b = runner.submit("글 B", want_result=True)
+        runner._results[a.id].set_result("결과 A")  # A 는 이미 끝남
+        runner.cancel(b.id)                        # B 는 취소됨
+        assert await runner.wait(a) == "결과 A"
+        with pytest.raises(asyncio.CancelledError):
+            await runner.wait(b)
+        assert not runner._results  # 받아 간 결과는 정리
+
+    asyncio.run(scenario())

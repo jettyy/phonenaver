@@ -77,3 +77,20 @@ def test_dashboard_api(env, tmp_path):
             await state.session.close()
 
     asyncio.run(scenario())
+
+
+def test_queue_is_not_trimmed(tmp_path, monkeypatch):
+    """대기 중인 작업은 몇 개든 지워지지 않는다 (예전에는 200개 넘으면 앞의 작업이 사라졌음)."""
+    monkeypatch.setattr(jobs, "JOBS_FILE", tmp_path / "jobs.json")
+    from phonenaver.config import Config
+
+    runner = jobs.JobRunner(lambda: Config(), None, jobs.Events())
+    for i in range(2500):
+        runner.jobs[f"q{i}"] = jobs.Job(id=f"q{i}", text=f"글 {i}", status="queued", created=i)
+    for i in range(2500):
+        runner.jobs[f"d{i}"] = jobs.Job(id=f"d{i}", text=f"끝 {i}", status="done", created=10000 + i)
+    runner._save()
+    assert sum(1 for j in runner.jobs.values() if j.status == "queued") == 2500
+    assert sum(1 for j in runner.jobs.values() if j.status == "done") == jobs.KEEP_FINISHED
+    again = jobs.JobRunner(lambda: Config(), None, jobs.Events())
+    assert sum(1 for j in again.jobs.values() if j.id.startswith("q")) == 2500

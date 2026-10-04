@@ -73,3 +73,14 @@ def test_long_text_keeps_everything():
     assert "30번째 줄" in cmd.instruction  # 마지막 줄까지 전부
     assert cmd.is_long and cmd.search
     assert not parse("캠핑 준비물").is_long
+
+
+def test_rank_target():
+    from phonenaver.command import rank_target
+
+    assert rank_target("2026 대학 순위 정리해줘") == 0          # 몇 위까지인지 안 정함 → 최소 10위
+    assert rank_target("국가기술자격증 TOP 5 추천") == 5
+    assert rank_target("대기업 연봉 순위 30위까지") == 30
+    assert rank_target("전국 맛집 베스트 50") == 50
+    assert rank_target("1위부터 100위까지 아파트 순위") == 100
+    assert rank_target("캠핑 준비물 정리") is None

@@ -42,6 +42,10 @@ class Command:
     photo_mode: str = "analyze"
 
     @property
+    def rank_target(self) -> int | None:
+        return rank_target(self.instruction)
+
+    @property
     def is_long(self) -> bool:
         """긴 글을 붙여넣은 경우: 전체를 분석하고 최신 정보로 확인해서 새로 쓴다."""
         return len(self.instruction) >= LONG_TEXT
@@ -53,6 +57,45 @@ class Command:
 
 
 LONG_TEXT = 300  # 이보다 긴 글은 '분석할 원문 자료' 로 본다
+
+# '순위' 글: 순위표를 1위부터 끝까지 빠짐없이 넣는다
+RANK_RE = re.compile(r"순위|랭킹|ranking|top\s*\d+|탑\s*\d+|best\s*\d+|베스트\s*\d+|\d+\s*위", re.IGNORECASE)
+RANK_N_RE = re.compile(r"(?:top|탑|best|베스트)\s*(\d{1,3})|(\d{1,3})\s*위(?:까지)?|(\d{1,3})\s*선(?![가-힣])", re.IGNORECASE)
+RANK_DEFAULT_MIN = 10  # 몇 위까지인지 안 정했을 때 최소
+
+# 유튜브 채널: "최근 3개월", "1년", "10개만"
+CHANNEL_MONTHS_RE = re.compile(r"(\d{1,2})\s*개월")
+CHANNEL_YEARS_RE = re.compile(r"(\d)\s*년(?!도)")
+CHANNEL_LIMIT_RE = re.compile(r"(\d{1,3})\s*개(?!월)(?:만|까지)?")
+CHANNEL_DEFAULT_MONTHS = 6
+
+
+def channel_options(text: str) -> tuple[int, int | None, str]:
+    """(몇 개월, 최대 몇 개, 기간·개수 표현을 뺀 나머지 지시)."""
+    months = CHANNEL_DEFAULT_MONTHS
+    m = CHANNEL_MONTHS_RE.search(text)
+    y = CHANNEL_YEARS_RE.search(text)
+    if m:
+        months = max(1, int(m.group(1)))
+    elif y:
+        months = max(1, int(y.group(1))) * 12
+    n = CHANNEL_LIMIT_RE.search(text)
+    limit = int(n.group(1)) if n else None
+    rest = text
+    for rx in (CHANNEL_MONTHS_RE, CHANNEL_YEARS_RE, CHANNEL_LIMIT_RE):
+        rest = rx.sub(" ", rest)
+    rest = re.sub(r"(최근|채널|영상들?|의|치|을|를|전부|모두|하나씩|각각)\s*", " ", rest)
+    return months, limit, clean_text(rest)
+
+
+def rank_target(text: str) -> int | None:
+    """순위 글이면 몇 위까지 쓸지 (정하지 않았으면 0), 순위 글이 아니면 None."""
+    head = text[:LONG_TEXT * 2]  # 긴 원문 안의 숫자에 휘둘리지 않게 앞부분 지시만 본다
+    if not RANK_RE.search(head):
+        return None
+    nums = [int(next(g for g in m.groups() if g)) for m in RANK_N_RE.finditer(head)]
+    nums = [n for n in nums if 3 <= n <= 300]
+    return max(nums) if nums else 0
 
 
 def clean_text(text: str) -> str:
