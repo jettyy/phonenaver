@@ -194,7 +194,7 @@ def test_channel_url_detection():
 
 
 def test_channel_request_becomes_one_job_per_video(tmp_path, monkeypatch):
-    """채널 링크 → 최근 영상마다 글 작업 하나씩. 이미 쓴 영상은 건너뛴다."""
+    """채널 링크 → 최근 영상마다 글 작업 하나씩. 이미 쓴 영상도 다시 쓴다 (몇 번이든 반복 가능)."""
     import asyncio
 
     from phonenaver import jobs
@@ -209,7 +209,7 @@ def test_channel_request_becomes_one_job_per_video(tmp_path, monkeypatch):
         return "테스트채널", [youtube.ChannelVideo(f"Vid{i:08d}", f"영상 {i}") for i in range(1, 5)]
 
     monkeypatch.setattr(youtube, "list_channel_videos", fake_list)
-    jobs.mark_video_done("Vid00000002")  # 예전에 이미 쓴 영상
+    jobs.mark_video_done("Vid00000002")  # 예전에 쓴 영상이어도
 
     async def scenario():
         runner = jobs.JobRunner(lambda: Config(), None, jobs.Events())
@@ -221,12 +221,12 @@ def test_channel_request_becomes_one_job_per_video(tmp_path, monkeypatch):
 
     runner, job, result = asyncio.run(scenario())
     assert asked["months"] == 3 and asked["limit"] is None
-    assert isinstance(result, jobs.ChannelResult) and result.found == 4 and result.skipped == 1
+    assert isinstance(result, jobs.ChannelResult) and result.found == 4 and result.skipped == 0
     texts = [c.text for c in result.children]
-    assert len(texts) == 3 and "Vid00000002" not in " ".join(texts)
+    assert len(texts) == 4 and "Vid00000002" in " ".join(texts)  # 건너뛰지 않음
     assert texts[0].startswith("https://www.youtube.com/watch?v=Vid00000001") and "초보자용으로 쉽게" in texts[0]
     assert all(c.status == "queued" and c.source == "phone" for c in result.children)
-    assert job.status == "done" and "글 3개" in job.message and len(job.children) == 3
+    assert job.status == "done" and "글 4개" in job.message and len(job.children) == 4
 
 
 def test_waiting_after_job_finished_or_canceled(tmp_path, monkeypatch):
@@ -259,3 +259,39 @@ def test_timedtext_and_panel_parsing():
     xml = '<transcript><text start="0">가 &amp; 나</text><text start="1">다</text></transcript>'
     assert youtube._segments_from_timedtext(xml) == ["가 & 나", "다"]
     assert youtube._clean_lines(["스크립트", "0:00", "대사 하나", "1:02:03", "대사 하나", "대사 둘"]) == ["대사 하나", "대사 둘"]
+
+
+def test_channel_dates_looked_up_when_list_has_none(monkeypatch):
+    """목록에 날짜가 없으면 영상마다 날짜를 확인해서 6개월치를 다 가져온다 (RSS 15개 제한에 걸리지 않게)."""
+    import sys
+    import time
+    import types
+
+    now = time.time()
+    entries = [{"id": f"Vid{i:08d}", "title": f"영상 {i}"} for i in range(30)]
+
+    class FakeYDL:
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=False):
+            return {"channel": "채널", "channel_id": "UCx", "entries": entries}
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYDL))
+    looked = []
+
+    def fake_time(vid):
+        looked.append(vid)
+        return now - int(vid[3:]) * 7 * 86400  # 일주일에 하나씩
+
+    monkeypatch.setattr(youtube, "_upload_time", fake_time)
+    monkeypatch.setattr(youtube, "_rss_videos", lambda cid: pytest.fail("RSS 를 쓰면 안 됨"))
+    name, videos = youtube.list_channel_videos("https://www.youtube.com/@ch", months=6)
+    assert 25 <= len(videos) <= 27  # 약 26주
+    assert len(looked) == len(videos) + 1  # 기준보다 오래된 영상 하나 보고 멈춤

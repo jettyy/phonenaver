@@ -444,6 +444,23 @@ def _rss_videos(channel_id: str) -> list[ChannelVideo]:
     return out
 
 
+def _upload_time(vid: str) -> float | None:
+    """영상 페이지의 올린 날짜 (uploadDate / publishDate)."""
+    from datetime import datetime
+
+    try:
+        r = httpx.get(f"https://www.youtube.com/watch?v={vid}", timeout=15, follow_redirects=True,
+                      headers={"Accept-Language": "ko-KR,ko;q=0.9"})
+        m = re.search(r'"(?:uploadDate|publishDate)"\s*:\s*"(\d{4}-\d{2}-\d{2}[^"]*)"', r.text) or \
+            re.search(r'itemprop="(?:uploadDate|datePublished)"\s+content="(\d{4}-\d{2}-\d{2}[^"]*)"', r.text)
+        if not m:
+            return None
+        raw = m.group(1)
+        return (datetime.fromisoformat(raw) if "T" in raw else datetime.fromisoformat(raw[:10])).timestamp()
+    except Exception:
+        return None
+
+
 def list_channel_videos(url: str, months: int = 6, limit: int | None = None) -> tuple[str, list[ChannelVideo]]:
     """(채널 이름, 최근 months 개월 영상 목록 - 최신순). 쇼츠·예정된 라이브는 뺀다."""
     import time
@@ -469,11 +486,17 @@ def list_channel_videos(url: str, months: int = 6, limit: int | None = None) -> 
     entries = [e for e in entries if e.get("live_status") not in ("is_upcoming", "is_live")]
 
     cutoff = time.time() - months * 30.44 * 86400
-    if entries and not any(e.get("timestamp") for e in entries) and info.get("channel_id"):
-        log.info("영상 날짜를 알 수 없어 RSS(최근 15개)로 대신합니다")
-        videos = _rss_videos(info["channel_id"])
-    else:
-        videos = [ChannelVideo(e["id"], e.get("title") or "", e.get("timestamp")) for e in entries]
+    videos = [ChannelVideo(e["id"], e.get("title") or "", e.get("timestamp")) for e in entries]
+    if videos and not any(v.timestamp for v in videos):
+        # 목록에 날짜가 안 나오면 영상마다 올린 날짜를 직접 확인 (RSS 는 최근 15개뿐이라 6개월치가 안 됨)
+        log.info("영상 날짜를 하나씩 확인합니다 (최근 %d개월치)", months)
+        for v in videos:
+            v.timestamp = _upload_time(v.id)
+            if v.timestamp and v.timestamp < cutoff:
+                break
+        if not any(v.timestamp for v in videos) and info.get("channel_id"):
+            log.info("영상 날짜를 알 수 없어 RSS(최근 15개)로 대신합니다")
+            videos = _rss_videos(info["channel_id"])
     recent = []
     for v in videos:  # 최신순이라 기준보다 오래된 영상이 나오면 멈춘다
         if v.timestamp and v.timestamp < cutoff:

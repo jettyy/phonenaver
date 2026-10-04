@@ -403,7 +403,6 @@ class JobRunner:
         children: list[Job] = []
         found = skipped = 0
         names = []
-        done = load_done_videos()
         try:
             for url in [u for u in cmd.urls if is_channel(u)]:
                 await say(f"📺 채널 영상 목록 확인 중 (최근 {months}개월{f', 최대 {limit}개' if limit else ''})...")
@@ -411,9 +410,7 @@ class JobRunner:
                 names.append(name or url)
                 found += len(videos)
                 for v in videos:
-                    if v.id in done and not job.dry_run:
-                        skipped += 1
-                        continue
+                    # 이미 쓴 영상도 다시 쓴다 (같은 채널을 몇 번이든 반복해서 보낼 수 있음)
                     children.append(self.submit(f"{prefix}{v.url}\n{extra}", source=job.source,
                                                 want_result=fut is not None))
         except Exception as exc:
