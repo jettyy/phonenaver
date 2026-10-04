@@ -55,3 +55,18 @@ def test_check_tables():
     assert "10위" in check_tables(t7, 0)           # 순위 글인데 몇 위까지인지 안 정함 → 최소 10줄
     assert "30위" in check_tables(t7, 30)
     assert check_tables(t7, 5) == ""
+
+
+def test_check_post_rank_and_length():
+    from phonenaver.html_utils import body_chars, check_post, rank_rows
+
+    rows = "".join(f"<tr><td>{i}위</td><td>대학{i}</td></tr>" for i in range(1, 12))
+    table = f"<table><tr><th>순위</th><th>대학</th></tr>{rows}</table>"
+    assert rank_rows(table) == 11
+    assert rank_rows("<table><tr><th>구분</th></tr><tr><td>A</td></tr></table>") == 0  # 순위표 아님
+    long_text = "<p>" + "가나다라마바사 " * 300 + "</p>"
+    assert check_post(table + long_text, 10, 1500) == []
+    probs = check_post("<p>짧은 글</p>", 10, 1500)
+    assert len(probs) == 3 and "표" in probs[0] and "순위표가 없습니다" in probs[1] and "짧습니다" in probs[2]
+    assert "5위까지만" in check_post("<table>" + "".join(f"<tr><td>{i}</td><td>x</td></tr>" for i in range(1, 6)) + "</table>", 10, 0)[0]
+    assert body_chars("<p>가 나 [[IMAGE1]]</p>") == 2

@@ -156,13 +156,26 @@ class Pipeline:
 
         cats = await self._categories(cmd, warnings)
 
+        # 순위표: '순위/TOP N' 이라고 했으면 그 개수, 아니어도 (설정이 켜져 있으면) 모든 글에 TOP 순위표
+        rank_explicit = cmd.rank_target is not None
+        if rank_explicit:
+            rank_need = cmd.rank_target or self.cfg.ranking_min
+        elif self.cfg.always_ranking:
+            rank_need = self.cfg.ranking_min
+        else:
+            rank_need = None
+
         research = None
         topic = cmd.instruction
         if photo_analysis and photo_analysis.search_topic:
             topic = f"{topic}\n(사진 분석으로 파악한 주제: {photo_analysis.search_topic})".strip()
-        if cmd.search and topic:
-            await progress("🔎 최신 정보 검색 중...")
-            research = await asyncio.to_thread(self._writer().research, topic)
+        # 링크·유튜브 글도 무슨 주제인지 알려 주고 최신 정보·순위 자료를 찾게 한다 (겉핥기 방지)
+        for page in pages:
+            if page.ok:
+                topic += f"\n\n[참고 자료 주제] {page.title}\n{page.text[:1500]}"
+        if (cmd.search or self.cfg.always_research) and topic.strip():
+            await progress("🔎 최신 정보·순위 자료 검색 중...")
+            research = await asyncio.to_thread(self._writer().research, topic, rank_need, rank_explicit)
 
         await progress("✍️ 글 작성 중...")
         write_args = (
@@ -177,20 +190,30 @@ class Pipeline:
             photo_analysis,
             "section" if per_section else "fixed",
         )
-        post = await asyncio.to_thread(self._writer().write, *write_args)
-        # 표 필수 · 순위 글은 1위부터 끝까지: 어겼으면 그 부분만 짚어 한 번 다시 쓰게 한다
-        problem = html_utils.check_tables(html_utils.sanitize(post.body_html), cmd.rank_target)
-        if problem:
-            await progress("✍️ 표/순위표를 보완해서 다시 쓰는 중...")
-            retry = await asyncio.to_thread(self._writer().write, *write_args, fix_note=problem)
-            def biggest(p) -> int:
-                return max(html_utils.table_rows(html_utils.sanitize(p.body_html)) or [-1])
+        quality = {"rank": rank_need, "rank_explicit": rank_explicit, "min_chars": self.cfg.min_chars}
+        post = await asyncio.to_thread(self._writer().write, *write_args, **quality)
 
-            if biggest(retry) >= biggest(post):  # 표가 더 잘 들어간 쪽을 쓴다
+        # 품질 검사: 표·순위표(1위부터 끝까지)·최소 분량. 어기면 고칠 점을 짚어 최대 2번 다시 쓰게 한다
+        def problems_of(p) -> list[str]:
+            return html_utils.check_post(html_utils.sanitize(p.body_html), rank_need, self.cfg.min_chars)
+
+        def score(p) -> tuple[int, int, int]:
+            body_ = html_utils.sanitize(p.body_html)
+            return (-len(problems_of(p)), html_utils.rank_rows(body_), html_utils.body_chars(body_))
+
+        problems = problems_of(post)
+        for attempt in range(2):
+            if not problems:
+                break
+            await progress(f"✍️ 순위표·분량을 보완해서 다시 쓰는 중... ({attempt + 1}/2)")
+            retry = await asyncio.to_thread(
+                self._writer().write, *write_args, fix_note="\n".join(f"- {x}" for x in problems), **quality
+            )
+            if score(retry) >= score(post):
                 post = retry
-            still = html_utils.check_tables(html_utils.sanitize(post.body_html), cmd.rank_target)
-            if still:
-                warnings.append(still.split(".")[0] + " (다시 써도 부족해서 그대로 저장)")
+            problems = problems_of(post)
+        for x in problems:
+            warnings.append(x.split(".")[0] + " (다시 써도 부족해서 그대로 저장)")
 
         body = html_utils.sanitize(post.body_html)
         if any(p.ok and p.kind == "youtube" for p in pages):

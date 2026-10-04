@@ -170,9 +170,41 @@ def test_missing_table_is_rewritten_once(writer, tmp_path):
     cfg.naver_blog_id = ""
     result = asyncio.run(Pipeline(cfg).generate(parse("/test 2026 대학 순위 TOP 20 정리")))
     writes = [c for c in _calls(writer) if "body_html" in c["args"][c["args"].index("--json-schema") + 1]]
-    assert len(writes) == 2  # 처음 + 다시 쓰기
+    assert len(writes) == 3  # 처음 + 최대 2번 다시 쓰기
     assert "[순위 글 규칙]" in writes[0]["prompt"] and "1위부터 20위까지" in writes[0]["prompt"]
-    assert "[다시 쓰기 요청]" in writes[1]["prompt"] and "표" in writes[1]["prompt"]
+    assert "[분량]" in writes[0]["prompt"] and "1,500자" in writes[0]["prompt"]
+    assert "[다시 쓰기 요청]" in writes[1]["prompt"] and "순위표" in writes[1]["prompt"] and "짧습니다" in writes[1]["prompt"]
     assert any("표" in w for w in result.warnings)  # 가짜 응답은 끝까지 표가 없어서 경고
     research = [c for c in _calls(writer) if "sources" in c["args"][c["args"].index("--json-schema") + 1]]
     assert "[순위 조사]" in research[0]["prompt"]
+
+
+def test_every_post_gets_ranking_and_good_post_is_not_rewritten(writer, tmp_path, monkeypatch):
+    """'순위' 라고 안 해도 모든 글에 TOP 순위표 규칙이 들어가고, 기준을 지킨 글은 다시 쓰지 않는다."""
+    import asyncio
+
+    from phonenaver import ai
+    from phonenaver.command import parse
+    from phonenaver.pipeline import Pipeline
+
+    rows = "".join(f"<tr><td>{i}위</td><td>항목{i}</td><td>{'설명 ' * 3}</td></tr>" for i in range(1, 11))
+    good = ai.BlogPost(
+        title="캠핑 준비물 TOP 10, 모르면 손해", tags=["캠핑"], images=[], category="",
+        body_html="<p>도입</p><h2>순위</h2><table><tr><th>순위</th><th>이름</th><th>설명</th></tr>" + rows + "</table>"
+                  + "<h2>설명</h2>" + "<p>" + "알찬 내용입니다. " * 200 + "</p>",
+    )
+    calls = []
+
+    def fake_write(self, *args, **kw):
+        calls.append(kw)
+        return good
+
+    monkeypatch.setattr(ai.Writer, "write", fake_write)
+    cfg = writer.cfg
+    cfg.naver_blog_id = ""
+    result = asyncio.run(Pipeline(cfg).generate(parse("/test 캠핑 초보 준비물 정리")))
+    assert len(calls) == 1  # 다시 쓰지 않음
+    assert calls[0]["rank"] == 10 and calls[0]["rank_explicit"] is False and calls[0]["min_chars"] == 1500
+    assert not any("순위표" in w or "짧습니다" in w for w in result.warnings)
+    research = [c for c in _calls(writer) if "sources" in c["args"][c["args"].index("--json-schema") + 1]]
+    assert research and "[순위 조사]" in research[0]["prompt"]  # 순위 자료도 검색

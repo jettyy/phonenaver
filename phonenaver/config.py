@@ -67,6 +67,11 @@ class Config:
     max_images: int = 8
     # 문단 사이 빈 줄 수
     paragraph_gap: int = 2
+    # 글 품질: 최소 분량(공백 제외), 모든 글에 순위표, 링크·유튜브 글도 최신 정보 검색
+    min_chars: int = 1500
+    always_ranking: bool = True
+    ranking_min: int = 10
+    always_research: bool = True
     # 글을 연달아 저장할 때 글 사이에 쉬는 시간(초)
     post_delay_min: int = 30
     post_delay_max: int = 90
@@ -100,6 +105,10 @@ class Config:
             image_per_section=_bool("IMAGE_PER_SECTION", True),
             max_images=_int("MAX_IMAGES", 8),
             paragraph_gap=_int("PARAGRAPH_GAP", 2),
+            min_chars=_int("MIN_CHARS", 1500),
+            always_ranking=_bool("ALWAYS_RANKING", True),
+            ranking_min=_int("RANKING_MIN", 10),
+            always_research=_bool("ALWAYS_RESEARCH", True),
             post_delay_min=_int("POST_DELAY_MIN", 30),
             post_delay_max=_int("POST_DELAY_MAX", 90),
             thumbnail_card=_bool("THUMBNAIL_CARD", True),

@@ -93,6 +93,53 @@ def check_tables(raw_html: str, rank: int | None, rank_min: int = 10) -> str:
     return ""
 
 
+RANK_CELL_RE = re.compile(r"^\s*(?:TOP\s*)?(\d{1,3})\s*(?:위|등|\.)?\s*$", re.I)
+
+
+def rank_rows(raw_html: str) -> int:
+    """순위표(첫 칸이 1위, 2위 … 처럼 순위 번호인 표)의 가장 긴 줄 수."""
+    soup = BeautifulSoup(raw_html, "html.parser")
+    best = 0
+    for table in soup.find_all("table"):
+        nums = []
+        for tr in table.find_all("tr"):
+            cell = tr.find(["td", "th"])
+            m = RANK_CELL_RE.match(cell.get_text(" ", strip=True)) if cell else None
+            if m and tr.find("td"):
+                nums.append(int(m.group(1)))
+        if nums and nums[0] == 1:
+            best = max(best, len(nums))
+    return best
+
+
+def body_chars(raw_html: str) -> int:
+    """본문 글자 수 (공백·사진 자리 표시 제외)."""
+    text = re.sub(r"\[\[IMAGE\d+\]\]", "", html_to_text(raw_html))
+    return len(re.sub(r"\s+", "", text))
+
+
+def check_post(raw_html: str, rank_need: int | None, min_chars: int = 0) -> list[str]:
+    """글 품질 검사. 어긴 것마다 '어떻게 고칠지' 를 돌려준다 (다 지켰으면 빈 목록)."""
+    problems = []
+    if not any(table_rows(raw_html)):
+        problems.append("본문에 표(<table>)가 없습니다. 내용에 맞는 정리표를 반드시 넣으세요.")
+    if rank_need:
+        have = rank_rows(raw_html)
+        if have < rank_need:
+            problems.append(
+                f"순위표가 {'없습니다' if not have else f'{have}위까지만 있습니다'}. 첫 열이 '1위, 2위 …' 인 순위표에 "
+                f"1위부터 최소 {rank_need}위까지 한 줄도 빠짐없이 넣으세요. 중간을 줄이거나 '이하 생략' 하지 마세요."
+            )
+    if min_chars:
+        n = body_chars(raw_html)
+        if n < min_chars:
+            problems.append(
+                f"본문이 공백 제외 {n:,}자로 짧습니다. 최소 {min_chars:,}자 이상이 되도록, 순위별 설명·구체적인 수치·"
+                "예시·체크리스트를 더해 내용을 채우세요 (같은 말 반복으로 늘리지 말 것)."
+            )
+    return problems
+
+
 BLOCK_TAGS = {"p", "h2", "h3", "ul", "ol", "table", "blockquote", "hr"}
 # 인포러시에서 실제 네이버 에디터로 검증된 빈 줄 형태
 BLANK = "<p><br></p>"

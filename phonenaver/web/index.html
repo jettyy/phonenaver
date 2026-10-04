@@ -142,6 +142,18 @@
           <input id="s-IMAGE_COUNT" type="number" min="0" max="10">
           <span class="sub">무료 사진 → 카드 이미지 순으로 채웁니다</span>
         </label>
+        <label>최소 분량 (공백 제외)
+          <input id="s-MIN_CHARS" type="number" min="0" max="10000" step="100">
+          <span class="sub">이보다 짧으면 내용을 보강해서 다시 쓰게 합니다 (기본 1,500자)</span>
+        </label>
+        <label>순위표 최소 줄 수
+          <input id="s-RANKING_MIN" type="number" min="3" max="100">
+          <span class="sub">'TOP 30' 처럼 개수를 말하면 그 개수, 아니면 이 값 (기본 10위)</span>
+        </label>
+        <label class="check"><input id="s-ALWAYS_RANKING" type="checkbox"> 모든 글에 순위표(1위부터) 넣기
+          <span class="sub">'순위' 라고 안 해도 주제에 맞는 TOP 순위표를 넣어 내용을 알차게 합니다</span></label>
+        <label class="check"><input id="s-ALWAYS_RESEARCH" type="checkbox"> 링크·유튜브 글도 최신 정보 검색
+          <span class="sub">영상·링크 내용에 최신 자료와 순위 자료를 더해 겉핥기 글을 막습니다</span></label>
         <label>글 사이 쉬는 시간 (초, 최소)
           <input id="s-POST_DELAY_MIN" type="number" min="0" max="3600">
           <span class="sub">글을 연달아 저장할 때 네이버 어뷰징 판정을 피하려고 쉽니다 (기본 30~90초)</span>
