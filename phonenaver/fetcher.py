@@ -26,6 +26,7 @@ class Page:
     truncated: bool = False
     kind: str = "web"  # "web" | "youtube"
     warning: str = ""
+    video: object = None  # 유튜브: 대사를 못 가져왔을 때 영상 정보 (브라우저로 다시 시도할 때 씀)
 
     @property
     def ok(self) -> bool:
@@ -76,31 +77,36 @@ def extract(html: str, url: str = "") -> tuple[str, str]:
 YOUTUBE_MAX_CHARS = 60000  # 긴 영상 자막도 최대한 전부
 
 
-def fetch_youtube(url: str) -> Page:
-    """유튜브: 영상 제목·채널·설명과 자막(대사) 전체."""
-    from .youtube import fetch_video
-
-    video = fetch_video(url)
+def youtube_page(url: str, video, transcript: str, language: str = "", auto: bool = False) -> Page:
     page = Page(url=url, final_url=f"https://www.youtube.com/watch?v={video.id}", title=video.title, kind="youtube")
     head = [f"[유튜브 영상] {video.title}".strip()]
     if video.channel:
         head.append(f"채널: {video.channel}")
     if video.description:
         head.append(f"영상 설명:\n{video.description}")
+    note = " (자동 생성 자막이라 틀린 글자가 있을 수 있음)" if auto else ""
+    body = transcript
+    if len(body) > YOUTUBE_MAX_CHARS:
+        body, page.truncated = body[:YOUTUBE_MAX_CHARS], True
+    head.append(f"영상 대사(자막{', 언어 ' + language if language else ''}){note}:\n{body}")
+    page.text = "\n\n".join(head)
+    return page
+
+
+def fetch_youtube(url: str) -> Page:
+    """유튜브: 영상 제목·채널·설명과 자막(대사) 전체.
+
+    대사를 못 가져오면 글을 쓰지 않는다 (제목·설명만으로 추측해서 쓰지 않음).
+    이때 page.error 에 이유를 담고, 파이프라인이 실제 브라우저로 한 번 더 시도한다.
+    """
+    from .youtube import fetch_video
+
+    video = fetch_video(url)
     if video.transcript:
-        auto = " (자동 생성 자막이라 틀린 글자가 있을 수 있음)" if video.auto_generated else ""
-        body = video.transcript
-        if len(body) > YOUTUBE_MAX_CHARS:
-            body, page.truncated = body[:YOUTUBE_MAX_CHARS], True
-        head.append(f"영상 대사(자막, 언어 {video.language}){auto}:\n{body}")
-        page.text = "\n\n".join(head)
-    elif video.title or video.description:
-        # 자막이 없으면 제목·설명만이라도 (오류 문구는 경고로 남긴다)
-        page.text = "\n\n".join(head + [f"(대사를 가져오지 못함: {video.error})"])
-        page.error = ""
-        page.warning = f"유튜브 자막 없음 — {video.error}. 제목·설명만으로 썼습니다"
-    else:
-        page.error = video.error or "유튜브 영상 정보를 가져오지 못했습니다"
+        return youtube_page(url, video, video.transcript, video.language, video.auto_generated)
+    page = Page(url=url, title=video.title, kind="youtube")
+    page.error = video.error or "유튜브 영상 정보를 가져오지 못했습니다"
+    page.video = video
     return page
 
 

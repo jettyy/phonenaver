@@ -87,14 +87,95 @@ def test_prefers_korean(monkeypatch):
     assert youtube.fetch_video("https://youtu.be/AbCdEfGhIjK").language == "ja"
 
 
-def test_no_transcript_uses_title_and_warns(monkeypatch):
-    class TranscriptsDisabled(Exception):
+def test_no_transcript_means_no_guessing(monkeypatch):
+    """대사를 못 가져오면 제목·설명으로 추측해서 쓰지 않는다 (예전에는 제목만으로 썼음)."""
+    class IpBlocked(Exception):
         pass
 
-    _fake_api(monkeypatch, error=TranscriptsDisabled())
+    _fake_api(monkeypatch, error=IpBlocked())
     page = fetcher.fetch("https://www.youtube.com/watch?v=AbCdEfGhIjK")
-    assert page.ok and "전세 사기 피하는 법" in page.text
-    assert "자막이 꺼져" in page.warning
+    assert not page.ok and "막았습니다" in page.error
+    assert page.video.blocked and page.video.title == "전세 사기 피하는 법 5가지"
+
+
+def _pipeline(tmp_path):
+    from phonenaver.config import Config
+    from phonenaver.pipeline import Pipeline
+
+    return Pipeline(Config(naver_blog_id="", image_dir=tmp_path / "img", browser_profile_dir=tmp_path / "b"), session=object())
+
+
+def test_browser_fallback_reads_transcript(monkeypatch, tmp_path):
+    """빠른 방법이 막히면 실제 브라우저로 [스크립트 표시] 를 열어 대사를 읽는다."""
+    import asyncio
+
+    class IpBlocked(Exception):
+        pass
+
+    _fake_api(monkeypatch, error=IpBlocked())
+
+    async def fake_browser(session, vid):
+        return "브라우저로 읽은 대사 첫 줄\n마지막 줄", ""
+
+    monkeypatch.setattr(youtube, "transcript_via_browser", fake_browser)
+    pages = [fetcher.fetch("https://youtu.be/AbCdEfGhIjK")]
+
+    async def noop(_):
+        return None
+
+    out = asyncio.run(_pipeline(tmp_path)._youtube_fallback(pages, noop))
+    assert out[0].ok and "브라우저로 읽은 대사" in out[0].text and "마지막 줄" in out[0].text
+
+
+def test_no_transcript_anywhere_stops_the_post(monkeypatch, tmp_path):
+    import asyncio
+
+    class IpBlocked(Exception):
+        pass
+
+    _fake_api(monkeypatch, error=IpBlocked())
+
+    async def fake_browser(session, vid):
+        return "", "스크립트를 열었지만 대사를 읽지 못했습니다"
+
+    monkeypatch.setattr(youtube, "transcript_via_browser", fake_browser)
+    pages = [fetcher.fetch("https://youtu.be/AbCdEfGhIjK")]
+
+    async def noop(_):
+        return None
+
+    with pytest.raises(youtube.TranscriptUnavailable) as err:
+        asyncio.run(_pipeline(tmp_path)._youtube_fallback(pages, noop))
+    assert err.value.blocked and "글을 쓰지 않았습니다" in str(err.value)
+
+
+def test_blocked_job_is_retried_later(tmp_path, monkeypatch):
+    """유튜브가 잠시 막았으면 실패로 끝내지 않고 10분 뒤 자동으로 다시 시도하도록 대기열에 둔다."""
+    import asyncio
+
+    from phonenaver import jobs, pipeline
+    from phonenaver.config import Config
+
+    monkeypatch.setattr(jobs, "JOBS_FILE", tmp_path / "jobs.json")
+
+    async def blocked_run(self, *a, **k):
+        raise youtube.TranscriptUnavailable("유튜브가 막음", blocked=True)
+
+    monkeypatch.setattr(pipeline.Pipeline, "run", blocked_run)
+    later = []
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        monkeypatch.setattr(loop, "call_later", lambda delay, fn, *args: later.append((delay, args)))
+        runner = jobs.JobRunner(lambda: Config(), None, jobs.Events())
+        runner._queue, runner._task = asyncio.Queue(), object()
+        job = runner.submit("https://youtu.be/AbCdEfGhIjK 글 써줘")
+        await runner._run(job)
+        return job
+
+    job = asyncio.run(scenario())
+    assert job.status == "queued" and job.retries == 1 and "10분 뒤" in job.message
+    assert later and later[0][0] == 600
 
 
 def test_youtube_link_is_analyzed_not_inserted():

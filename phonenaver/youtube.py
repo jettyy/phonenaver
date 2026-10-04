@@ -53,6 +53,33 @@ class Video:
     language: str = ""
     auto_generated: bool = False
     error: str = ""
+    blocked: bool = False  # 유튜브가 잠시 막은 경우 (시간이 지나면 풀림)
+
+
+class TranscriptUnavailable(RuntimeError):
+    """대사(자막)를 못 가져옴 — 추측해서 쓰지 않도록 글쓰기를 멈춘다."""
+
+    def __init__(self, message: str, blocked: bool = False):
+        super().__init__(message)
+        self.blocked = blocked
+
+
+BLOCK_ERRORS = ("RequestBlocked", "IpBlocked", "TooManyRequests", "YouTubeRequestFailed", "PoTokenRequired")
+MIN_GAP_SECONDS = 20  # 자막 요청 사이 최소 간격 (연달아 요청하면 막힘)
+_last_request = 0.0
+_gap_lock = __import__("threading").Lock()
+
+
+def _wait_turn() -> None:
+    """채널 영상처럼 연달아 요청할 때 간격을 둔다."""
+    import time
+
+    global _last_request
+    with _gap_lock:
+        wait = _last_request + MIN_GAP_SECONDS - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        _last_request = time.time()
 
 
 def _meta(vid: str) -> tuple[str, str, str]:
@@ -73,13 +100,14 @@ def _meta(vid: str) -> tuple[str, str, str]:
     return title, channel, description[:3000]
 
 
-def _transcript(vid: str) -> tuple[str, str, bool, str]:
-    """(자막 전체, 언어, 자동 생성 여부, 오류)."""
+def _transcript(vid: str) -> tuple[str, str, bool, str, bool]:
+    """(자막 전체, 언어, 자동 생성 여부, 오류, 막힘 여부) — 빠른 방법(자막 API)."""
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError:
-        return "", "", False, "youtube-transcript-api 가 설치되지 않았습니다 (npm install 을 다시 실행하세요)"
+        return "", "", False, "youtube-transcript-api 가 설치되지 않았습니다 (npm install 을 다시 실행하세요)", False
 
+    _wait_turn()
     api = YouTubeTranscriptApi()
     try:
         listing = api.list(vid)
@@ -97,11 +125,11 @@ def _transcript(vid: str) -> tuple[str, str, bool, str]:
         if chosen is None:  # 한국어·영어가 없으면 있는 자막 아무거나
             chosen = next(iter(listing), None)
         if chosen is None:
-            return "", "", False, "이 영상에는 자막이 없습니다"
+            return "", "", False, "이 영상에는 자막이 없습니다", False
         fetched = chosen.fetch()
         lines = [s.text.replace("\n", " ").strip() for s in fetched]
         text = "\n".join(t for t in lines if t and t not in ("[음악]", "[Music]", "[박수]", "[Applause]"))
-        return text, chosen.language_code, bool(chosen.is_generated), ""
+        return text, chosen.language_code, bool(chosen.is_generated), "", False
     except Exception as exc:  # 자막 꺼짐, 비공개, 연령 제한, 요청 차단 등
         name = type(exc).__name__
         reason = {
@@ -112,7 +140,7 @@ def _transcript(vid: str) -> tuple[str, str, bool, str]:
             "RequestBlocked": "유튜브가 요청을 막았습니다. 잠시 뒤 다시 시도하세요",
             "IpBlocked": "유튜브가 이 인터넷 주소의 요청을 막았습니다. 잠시 뒤 다시 시도하세요",
         }.get(name, f"자막을 가져오지 못했습니다 ({name})")
-        return "", "", False, reason
+        return "", "", False, reason, name in BLOCK_ERRORS or "Proxy" in name or "Connect" in name
 
 
 def fetch_video(url: str) -> Video:
@@ -121,8 +149,124 @@ def fetch_video(url: str) -> Video:
         return Video(id="", error="유튜브 주소가 아닙니다")
     video = Video(id=vid)
     video.title, video.channel, video.description = _meta(vid)
-    video.transcript, video.language, video.auto_generated, video.error = _transcript(vid)
+    video.transcript, video.language, video.auto_generated, video.error, video.blocked = _transcript(vid)
     return video
+
+
+# ── 실제 브라우저로 '스크립트 표시' 열어서 대사 읽기 ──────────────────
+
+def _segments_from_json(data) -> list[str]:
+    """youtubei get_transcript 응답에서 자막 줄을 모두 찾는다 (응답 모양이 바뀌어도 버티도록 재귀 탐색)."""
+    out: list[str] = []
+
+    def text_of(node) -> str:
+        if isinstance(node, dict):
+            if "simpleText" in node:
+                return node["simpleText"]
+            if "runs" in node:
+                return "".join(r.get("text", "") for r in node["runs"])
+            if "content" in node and isinstance(node["content"], str):
+                return node["content"]
+        return ""
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            seg = node.get("transcriptSegmentRenderer")
+            if isinstance(seg, dict):
+                t = text_of(seg.get("snippet", {})).strip()
+                if t:
+                    out.append(t)
+                return
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(data)
+    return out
+
+
+SHOW_TRANSCRIPT = re.compile(r"스크립트 표시|스크립트 보기|Show transcript|transcript", re.I)
+SEGMENT_SELECTORS = (
+    "ytd-transcript-segment-renderer .segment-text",
+    "ytd-transcript-segment-renderer yt-formatted-string",
+    "transcript-segment-view-model span",
+)
+
+
+async def transcript_via_browser(session, vid: str, timeout_s: int = 40) -> tuple[str, str]:
+    """(대사 전체, 오류). 사람이 영상 페이지에서 [스크립트 표시] 를 누른 것과 똑같이 한다."""
+    import asyncio
+
+    await asyncio.to_thread(_wait_turn)
+    captured: list[str] = []
+    async with session.lock():
+        ctx = await session.context()
+        page = await ctx.new_page()
+
+        async def on_response(resp) -> None:
+            if "get_transcript" in resp.url:
+                try:
+                    captured.extend(_segments_from_json(await resp.json()))
+                except Exception:
+                    pass
+
+        page.on("response", on_response)
+        try:
+            await page.goto(f"https://www.youtube.com/watch?v={vid}", wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(3000)
+            # 설명란 '...더보기' 를 열어야 [스크립트 표시] 버튼이 보인다
+            for sel in ("#description-inline-expander #expand", "tp-yt-paper-button#expand", "#expand"):
+                try:
+                    loc = page.locator(sel).first
+                    if await loc.count() and await loc.is_visible():
+                        await loc.click()
+                        break
+                except Exception:
+                    continue
+            await page.wait_for_timeout(800)
+            opened = False
+            for loc in (
+                page.locator("ytd-video-description-transcript-section-renderer button").first,
+                page.get_by_role("button", name=SHOW_TRANSCRIPT).first,
+            ):
+                try:
+                    if await loc.count():
+                        await loc.click()
+                        opened = True
+                        break
+                except Exception:
+                    continue
+            if not opened:
+                return "", "이 영상에는 스크립트(자막)가 없습니다"
+            deadline = asyncio.get_running_loop().time() + timeout_s
+            lines: list[str] = []
+            while asyncio.get_running_loop().time() < deadline:
+                await page.wait_for_timeout(1000)
+                if captured:
+                    lines = captured
+                    break
+                for sel in SEGMENT_SELECTORS:
+                    texts = [t.strip() for t in await page.locator(sel).all_inner_texts() if t.strip()]
+                    if len(texts) >= 3:
+                        lines = texts
+                        break
+                if lines:
+                    await page.wait_for_timeout(1500)  # 나머지 줄이 다 그려질 때까지
+                    for sel in SEGMENT_SELECTORS:
+                        texts = [t.strip() for t in await page.locator(sel).all_inner_texts() if t.strip()]
+                        if len(texts) > len(lines):
+                            lines = texts
+                    break
+            lines = [t for t in lines if t not in ("[음악]", "[Music]", "[박수]", "[Applause]")]
+            if not lines:
+                return "", "스크립트를 열었지만 대사를 읽지 못했습니다"
+            return "\n".join(lines), ""
+        except Exception as exc:
+            return "", f"브라우저로 대사를 읽지 못했습니다 ({str(exc).splitlines()[0][:120]})"
+        finally:
+            await page.close()
 
 
 # ── 채널: 최근 영상 목록 ─────────────────────────────────────

@@ -70,6 +70,39 @@ class Pipeline:
             warnings.append("카테고리 목록을 불러오지 못해 기본 카테고리에 저장")
             return []
 
+    async def _youtube_fallback(self, pages: list[Page], progress: Progress) -> list[Page]:
+        """유튜브 대사를 빠른 방법으로 못 가져오면 실제 브라우저로 [스크립트 표시] 를 열어 읽는다.
+        그래도 못 읽으면 글을 쓰지 않는다 (제목·설명만으로 추측해서 쓰지 않음)."""
+        from .browser import BrowserSession
+        from .fetcher import youtube_page
+        from .youtube import TranscriptUnavailable, transcript_via_browser
+
+        out = []
+        for page in pages:
+            if page.kind != "youtube" or page.ok or page.video is None or not getattr(page.video, "id", ""):
+                out.append(page)
+                continue
+            video = page.video
+            await progress(f"🎬 '{(video.title or video.id)[:40]}' 대사를 브라우저로 다시 읽는 중...")
+            session = self.session or (self.naver.session if self.naver else None)
+            own = session is None
+            session = session or BrowserSession(self.cfg)
+            try:
+                text, err = await transcript_via_browser(session, video.id)
+            finally:
+                if own:
+                    await session.close()
+            if text:
+                out.append(youtube_page(page.url, video, text))
+                continue
+            blocked = bool(getattr(video, "blocked", False)) and "없습니다" not in err
+            raise TranscriptUnavailable(
+                f"유튜브 대사를 가져오지 못해 글을 쓰지 않았습니다 — {video.error}"
+                + (f" / 브라우저: {err}" if err else ""),
+                blocked=blocked,
+            )
+        return out
+
     async def generate(self, cmd: Command, photos: list[Path] | None = None, progress: Progress = _silent) -> Result:
         photos = list(photos or [])
         warnings: list[str] = []
@@ -116,6 +149,7 @@ class Pipeline:
             if failed:
                 await progress("⚠️ 읽지 못한 링크: " + ", ".join(f"{p.url} ({p.error})" for p in failed))
             warnings += [p.warning for p in pages if p.warning]
+            pages = await self._youtube_fallback(pages, progress)
             for p in pages:
                 if p.ok and p.kind == "youtube":
                     await progress(f"🎬 '{p.title[:40]}' 대사 {len(p.text):,}자 읽음 — 분석해서 글 작성")

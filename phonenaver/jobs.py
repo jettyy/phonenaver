@@ -25,6 +25,7 @@ JOBS_FILE = DATA / "jobs.json"
 YOUTUBE_DONE_FILE = DATA / "youtube-done.json"  # 이미 글로 쓴 유튜브 영상 (채널 요청 때 중복 방지)
 # 대기열(대기·진행 중)은 개수 제한 없음. 끝난 작업 기록만 최근 이만큼 보관 (글은 이미 네이버에 저장돼 있음)
 KEEP_FINISHED = 2000
+YOUTUBE_RETRIES = 3
 Progress = Callable[[str], Awaitable[None]]
 
 
@@ -97,6 +98,7 @@ class Job:
     screenshot: str = ""
     needs_login: bool = False
     children: list[str] = field(default_factory=list)  # 유튜브 채널 요청이 만든 영상별 작업
+    retries: int = 0  # 유튜브가 잠시 막아서 자동으로 다시 시도한 횟수
 
     def public(self) -> dict:
         data = asdict(self)
@@ -275,6 +277,7 @@ class JobRunner:
     async def _run(self, job: Job) -> None:
         from .naver import NaverError, NotLoggedIn
         from .pipeline import Pipeline
+        from .youtube import TranscriptUnavailable
 
         cfg = self.get_cfg()
         self._update(job, status="running", message="시작")
@@ -300,6 +303,28 @@ class JobRunner:
         try:
             pipe = Pipeline(cfg, self.session)
             result = await pipe.run(job.text, progress, photos=[Path(p) for p in job.photos], photo_mode=job.photo_mode)
+        except TranscriptUnavailable as exc:
+            # 유튜브가 잠시 막은 경우: 시간이 지나면 풀리므로 10분 → 20분 → 40분 뒤 자동으로 다시
+            if exc.blocked and job.retries < YOUTUBE_RETRIES:
+                minutes = 10 * (2 ** job.retries)
+                self._update(job, status="queued", retries=job.retries + 1, error=str(exc),
+                             message=f"유튜브가 잠시 막음 — {minutes}분 뒤 자동으로 다시 시도 ({job.retries + 1}/{YOUTUBE_RETRIES})")
+                log.warning("유튜브가 잠시 막아서 %d분 뒤 다시 시도합니다: %s", minutes, job.text.splitlines()[0][:60])
+                if callback:  # 다시 시도할 때도 휴대폰에 진행 상황을 보낸다
+                    self._callbacks[job.id] = callback
+                asyncio.get_running_loop().call_later(minutes * 60, self._requeue, job.id)
+                if callback:
+                    try:
+                        await callback(job.message)
+                    except Exception:
+                        pass
+                return
+            self._update(job, status="failed", message="유튜브 대사 없음 — 글을 쓰지 않음", error=str(exc),
+                         finished=time.time())
+            log.warning("%s", exc)
+            if fut and not fut.done():
+                fut.set_exception(exc)
+            return
         except NotLoggedIn as exc:
             self._update(job, status="failed", message="네이버 로그인 필요", error=str(exc), needs_login=True,
                          finished=time.time(), screenshot=str(exc.screenshot or ""))
@@ -349,6 +374,11 @@ class JobRunner:
                     mark_video_done(vid)
         if fut and not fut.done():
             fut.set_result(result)
+
+    def _requeue(self, job_id: str) -> None:
+        job = self.jobs.get(job_id)
+        if job is not None and job.status == "queued" and self._queue is not None:
+            self._queue.put_nowait(job_id)
 
     async def _expand_channel(self, job: Job, callback: Progress | None) -> None:
         """유튜브 채널 요청 → 최근 영상마다 글쓰기 작업 하나씩 대기열에 넣는다."""
