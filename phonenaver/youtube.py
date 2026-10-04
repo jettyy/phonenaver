@@ -9,6 +9,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -187,36 +188,122 @@ def _segments_from_json(data) -> list[str]:
     return out
 
 
-SHOW_TRANSCRIPT = re.compile(r"스크립트 표시|스크립트 보기|Show transcript|transcript", re.I)
-SEGMENT_SELECTORS = (
-    "ytd-transcript-segment-renderer .segment-text",
-    "ytd-transcript-segment-renderer yt-formatted-string",
-    "transcript-segment-view-model span",
-)
+SHOW_TRANSCRIPT = re.compile(r"스크립트 표시|스크립트 보기|Show transcript", re.I)
+NOISE = {"[음악]", "[Music]", "[박수]", "[Applause]", "[웃음]", "[Laughter]"}
+TIMESTAMP_RE = re.compile(r"^\d{1,2}:\d{2}(?::\d{2})?$")
+PANEL_UI_WORDS = {"스크립트", "Transcript", "검색", "Search", "챕터", "Chapters", "더보기", "닫기", "Close", "한국어", "English",
+                  "한국어 (자동 생성됨)", "English (auto-generated)", "타임스탬프 전환", "Toggle timestamps"}
+
+
+def _segments_from_timedtext(body: str) -> list[str]:
+    """플레이어가 받아 오는 자막 파일 (json3 또는 XML) → 줄 목록."""
+    import html as htmlmod
+
+    body = body.strip()
+    if not body:
+        return []
+    if body.startswith("{"):
+        try:
+            data = json.loads(body)
+        except ValueError:
+            return []
+        lines = []
+        for ev in data.get("events", []):
+            t = "".join(seg.get("utf8", "") for seg in ev.get("segs", []) or []).replace("\n", " ").strip()
+            if t:
+                lines.append(t)
+        return lines
+    texts = re.findall(r"<(?:text|p)\b[^>]*>(.*?)</(?:text|p)>", body, re.S)
+    return [htmlmod.unescape(re.sub(r"<[^>]+>", "", t)).replace("\n", " ").strip() for t in texts if t.strip()]
+
+
+def _clean_lines(lines: list[str]) -> list[str]:
+    out = []
+    for t in lines:
+        t = t.strip()
+        if not t or t in NOISE or TIMESTAMP_RE.match(t) or t in PANEL_UI_WORDS:
+            continue
+        if out and out[-1] == t:  # 자동 자막의 겹친 줄
+            continue
+        out.append(t)
+    return out
+
+
+async def _panel_text(page) -> list[str]:
+    """열린 '스크립트' 패널의 글자를 통째로 읽어 자막 줄만 남긴다 (화면 구조가 바뀌어도 버티도록)."""
+    js = r"""() => {
+      const panels = [...document.querySelectorAll('ytd-engagement-panel-section-list-renderer')]
+        .filter(p => /transcript|script/i.test(p.getAttribute('target-id') || '') ||
+                     /스크립트|transcript/i.test((p.querySelector('#title-text, #header') || {}).innerText || ''));
+      const segs = [...document.querySelectorAll(
+        'ytd-transcript-segment-renderer, transcript-segment-view-model, [class*="segment-text"]')];
+      if (segs.length) return segs.map(s => s.innerText);
+      return panels.map(p => p.innerText);
+    }"""
+    try:
+        raw = await page.evaluate(js)
+    except Exception:
+        return []
+    lines: list[str] = []
+    for block in raw or []:
+        lines += [ln for ln in str(block).splitlines()]
+    return _clean_lines(lines)
 
 
 async def transcript_via_browser(session, vid: str, timeout_s: int = 40) -> tuple[str, str]:
-    """(대사 전체, 오류). 사람이 영상 페이지에서 [스크립트 표시] 를 누른 것과 똑같이 한다."""
+    """(대사 전체, 오류). 사람이 영상 페이지를 보는 것과 똑같이 한다.
+
+    ① [스크립트 표시] 패널을 열어 유튜브가 받아 오는 대사 데이터를 가로채거나 패널 글자를 읽고
+    ② 안 되면 영상을 소리 끈 채 재생하고 자막(CC)을 켜서, 플레이어가 받아 오는 자막 파일을 가로챈다.
+    못 읽으면 data/debug/ 에 화면 캡처와 기록을 남긴다.
+    """
     import asyncio
 
     await asyncio.to_thread(_wait_turn)
-    captured: list[str] = []
+    from_api: list[str] = []
+    from_player: list[str] = []
+    seen_urls: list[str] = []
     async with session.lock():
         ctx = await session.context()
         page = await ctx.new_page()
 
         async def on_response(resp) -> None:
-            if "get_transcript" in resp.url:
+            url = resp.url
+            if "get_transcript" in url or "timedtext" in url:
+                seen_urls.append(f"{resp.status} {url[:160]}")
+            try:
+                if "get_transcript" in url:
+                    from_api.extend(_segments_from_json(await resp.json()))
+                elif "/api/timedtext" in url and resp.status == 200:
+                    lines = _segments_from_timedtext(await resp.text())
+                    if len(lines) > len(from_player):
+                        from_player[:] = lines
+            except Exception:
+                pass
+
+        page.on("response", on_response)
+        loop = asyncio.get_running_loop()
+
+        async def wait_for(check, seconds: float) -> bool:
+            end = loop.time() + seconds
+            while loop.time() < end:
+                if check():
+                    return True
+                await page.wait_for_timeout(700)
+            return check()
+
+        try:
+            await page.goto(f"https://www.youtube.com/watch?v={vid}", wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(3500)
+            for sel in ("button[aria-label*='동의'], button[aria-label*='Accept']",):  # 쿠키 동의 창이 뜨는 지역 대비
                 try:
-                    captured.extend(_segments_from_json(await resp.json()))
+                    btn = page.locator(sel).first
+                    if await btn.count() and await btn.is_visible():
+                        await btn.click()
                 except Exception:
                     pass
 
-        page.on("response", on_response)
-        try:
-            await page.goto(f"https://www.youtube.com/watch?v={vid}", wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(3000)
-            # 설명란 '...더보기' 를 열어야 [스크립트 표시] 버튼이 보인다
+            # ① 스크립트 패널
             for sel in ("#description-inline-expander #expand", "tp-yt-paper-button#expand", "#expand"):
                 try:
                     loc = page.locator(sel).first
@@ -225,7 +312,7 @@ async def transcript_via_browser(session, vid: str, timeout_s: int = 40) -> tupl
                         break
                 except Exception:
                     continue
-            await page.wait_for_timeout(800)
+            await page.wait_for_timeout(1000)
             opened = False
             for loc in (
                 page.locator("ytd-video-description-transcript-section-renderer button").first,
@@ -238,35 +325,73 @@ async def transcript_via_browser(session, vid: str, timeout_s: int = 40) -> tupl
                         break
                 except Exception:
                     continue
-            if not opened:
-                return "", "이 영상에는 스크립트(자막)가 없습니다"
-            deadline = asyncio.get_running_loop().time() + timeout_s
-            lines: list[str] = []
-            while asyncio.get_running_loop().time() < deadline:
-                await page.wait_for_timeout(1000)
-                if captured:
-                    lines = captured
-                    break
-                for sel in SEGMENT_SELECTORS:
-                    texts = [t.strip() for t in await page.locator(sel).all_inner_texts() if t.strip()]
-                    if len(texts) >= 3:
-                        lines = texts
+            panel: list[str] = []
+            if opened:
+                async def panel_ready() -> None:
+                    panel[:] = await _panel_text(page)
+
+                end = loop.time() + min(timeout_s, 20)
+                while loop.time() < end and not from_api:
+                    await page.wait_for_timeout(1000)
+                    await panel_ready()
+                    if len(panel) >= 5:
+                        await page.wait_for_timeout(1500)  # 나머지 줄이 다 그려질 때까지
+                        await panel_ready()
                         break
-                if lines:
-                    await page.wait_for_timeout(1500)  # 나머지 줄이 다 그려질 때까지
-                    for sel in SEGMENT_SELECTORS:
-                        texts = [t.strip() for t in await page.locator(sel).all_inner_texts() if t.strip()]
-                        if len(texts) > len(lines):
-                            lines = texts
-                    break
-            lines = [t for t in lines if t not in ("[음악]", "[Music]", "[박수]", "[Applause]")]
-            if not lines:
-                return "", "스크립트를 열었지만 대사를 읽지 못했습니다"
-            return "\n".join(lines), ""
+            lines = _clean_lines(from_api) or panel
+            if len(lines) >= 3:
+                return "\n".join(lines), ""
+
+            # ② 영상을 소리 끄고 재생 + 자막(CC) 켜기 → 플레이어가 받는 자막 파일
+            try:
+                await page.evaluate("""() => { const v = document.querySelector('video');
+                                         if (v) { v.muted = true; v.play().catch(() => {}); } }""")
+                player = page.locator("#movie_player, .html5-video-player").first
+                if await player.count():
+                    await player.hover()
+                cc = page.locator(".ytp-subtitles-button").first
+                if await cc.count() and (await cc.get_attribute("aria-pressed")) != "true":
+                    await cc.click()
+                else:
+                    await page.keyboard.press("c")
+            except Exception:
+                pass
+            await wait_for(lambda: len(from_player) >= 3, min(timeout_s, 25))
+            lines = _clean_lines(from_player)
+            if len(lines) >= 3:
+                return "\n".join(lines), ""
+
+            debug = await _save_debug(session, page, vid, opened, seen_urls)
+            if not opened and not seen_urls:
+                return "", f"이 영상에는 스크립트(자막)가 없는 것 같습니다 (확인용 화면: {debug})"
+            return "", f"스크립트를 열었지만 대사를 읽지 못했습니다 (확인용 화면: {debug})"
         except Exception as exc:
             return "", f"브라우저로 대사를 읽지 못했습니다 ({str(exc).splitlines()[0][:120]})"
         finally:
             await page.close()
+
+
+async def _save_debug(session, page, vid: str, opened: bool, seen_urls: list[str]) -> str:
+    """못 읽었을 때 원인을 찾을 수 있게 화면과 기록을 남긴다."""
+    import time
+
+    folder = session.data_dir / "debug"
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = folder / f"youtube-{vid}-{time.strftime('%m%d-%H%M%S')}"
+    try:
+        await page.screenshot(path=str(stem) + ".png", full_page=False)
+    except Exception:
+        pass
+    try:
+        panels = await page.evaluate("""() => [...document.querySelectorAll('ytd-engagement-panel-section-list-renderer')]
+            .map(p => (p.getAttribute('target-id') || '') + ' | ' + (p.getAttribute('visibility') || '') + '\\n' +
+                      p.innerText.slice(0, 1500)).join('\\n----\\n')""")
+    except Exception:
+        panels = ""
+    info = [f"video: {vid}", f"url: {page.url}", f"transcript button clicked: {opened}",
+            "caption responses:", *seen_urls, "", "panels:", panels or "(none)"]
+    Path(str(stem) + ".txt").write_text("\n".join(info), encoding="utf-8")
+    return str(stem) + ".png"
 
 
 # ── 채널: 최근 영상 목록 ─────────────────────────────────────

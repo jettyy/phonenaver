@@ -251,3 +251,11 @@ def test_waiting_after_job_finished_or_canceled(tmp_path, monkeypatch):
         assert not runner._results  # 받아 간 결과는 정리
 
     asyncio.run(scenario())
+
+
+def test_timedtext_and_panel_parsing():
+    data = '{"events": [{"segs": [{"utf8": "첫 줄"}]}, {"segs": [{"utf8": "[음악]"}]}, {"segs": [{"utf8": "둘째"}, {"utf8": " 줄"}]}]}'
+    assert youtube._clean_lines(youtube._segments_from_timedtext(data)) == ["첫 줄", "둘째 줄"]
+    xml = '<transcript><text start="0">가 &amp; 나</text><text start="1">다</text></transcript>'
+    assert youtube._segments_from_timedtext(xml) == ["가 & 나", "다"]
+    assert youtube._clean_lines(["스크립트", "0:00", "대사 하나", "1:02:03", "대사 하나", "대사 둘"]) == ["대사 하나", "대사 둘"]
