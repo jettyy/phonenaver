@@ -51,8 +51,12 @@ def _runner(tmp_path, monkeypatch, cfg):
     monkeypatch.setattr(naver, "NaverBlog", FakeBlog)
     FakeBlog.calls, FakeBlog.fail = [], None
     runner = jobs.JobRunner(lambda: cfg, None, jobs.Events())
-    runner._queue, runner._task = asyncio.Queue(), object()
+    runner._task = object()  # 글쓰기 일꾼은 돌리지 않음 (대기열은 이벤트 루프 안에서 만든다 — 파이썬 3.9)
     return runner
+
+
+def _with_queue(runner):
+    runner._queue = asyncio.Queue()
 
 
 def _saved_job(runner, **kw):
@@ -73,6 +77,7 @@ def test_scheduled_publish_runs_at_time_and_notifies(tmp_path, monkeypatch):
     runner.on_published.append(listener)
 
     async def scenario():
+        _with_queue(runner)
         job = _saved_job(runner)
         runner.schedule_publish(job)  # 시작 시각 비움 + 랜덤 0 → 곧바로
         assert job.publish_state == "scheduled" and "발행 예정" in job.message
@@ -91,6 +96,7 @@ def test_cancel_and_failure(tmp_path, monkeypatch):
     runner = _runner(tmp_path, monkeypatch, cfg)
 
     async def scenario():
+        _with_queue(runner)
         job = _saved_job(runner)
         runner.schedule_publish(job, when=10**10)  # 아주 먼 미래
         assert runner.cancel_publish(job.id) and job.publish_state == "canceled"
@@ -109,6 +115,7 @@ def test_reservations_survive_restart(tmp_path, monkeypatch):
     runner = _runner(tmp_path, monkeypatch, cfg)
 
     async def first():
+        _with_queue(runner)
         job = _saved_job(runner)
         runner.schedule_publish(job, when=10**10)
 
@@ -136,6 +143,7 @@ def test_draft_mode_does_not_publish(tmp_path, monkeypatch):
     runner = _runner(tmp_path, monkeypatch, Config(publish_mode="draft"))
 
     async def scenario():
+        _with_queue(runner)
         a = runner.submit("캠핑 준비물 정리")
         b = runner.submit("전세 월세 정리해서 21시에 발행해줘")
         return a, b
