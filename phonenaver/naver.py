@@ -48,6 +48,23 @@ SELECTORS = {
     "publish_layer": "[class*='layer_publish'], [class*='publish_layer']",
     "publish_layer_close": "[class*='layer_publish'] button[class*='close'], [class*='publish_layer'] button[class*='close']",
     "category_select": "[class*='option_category'] button, button[class*='selectbox_button']",
+    # [발행] 레이어 안의 '진짜 발행' 버튼 — 발행 모드에서만 누른다
+    "publish_confirm": [
+        "[class*='layer_publish'] button[class*='confirm_btn']",
+        "[class*='publish_layer'] button[class*='confirm_btn']",
+        "button[class*='confirm_btn']",
+        "button[data-testid='seOnePublishBtn']",
+        "[class*='layer_publish'] button:text-is('발행')",
+    ],
+    # 임시저장 글 목록: 헤더의 [저장] 옆 숫자 버튼 → 목록에서 제목으로 찾아 불러오기
+    "draft_list_button": [
+        "button[class*='save_count_btn']",
+        "button[data-click-area='tpb.savecount']",
+        "button[class*='temp_count']",
+    ],
+    "draft_item": ["[class*='temp_post'] li", "[class*='save_list'] li", "[class*='draft'] li", "[class*='list_item']"],
+    "popup_confirm": ".se-popup-button-confirm, button:has-text('확인')",
+    "tag_input": "[class*='layer_publish'] input[placeholder*='태그'], [class*='tag_input'] input, input[placeholder*='태그']",
     # 위에서부터 차례로 시도 (label 을 눌러야 선택되는 경우가 많음)
     "category_option": ["[class*='option_list'] label", "[role='option']", "[class*='option_list'] li"],
     "save_button": (
@@ -75,6 +92,8 @@ class DraftResult:
     images_inserted: int = 0
     category: str | None = None
     warnings: list[str] = field(default_factory=list)
+    published: bool = False
+    post_url: str = ""
 
 
 @dataclass
@@ -270,12 +289,15 @@ class NaverBlog:
         body_html: str,
         images: list[Path] | None = None,
         category: Category | None = None,
+        publish: bool = False,
+        tags: list[str] | None = None,
     ) -> DraftResult:
+        """publish=False: 임시저장, True: [발행] 레이어에서 실제로 발행."""
         async with self.session.lock():
             ctx = await self._logged_in_context()
             page = await ctx.new_page()  # 브라우저는 계속 열어 두고 탭만 열고 닫는다
             try:
-                result = await self._save(page, title, body_html, images or [], category)
+                result = await self._save(page, title, body_html, images or [], category, publish, tags or [])
                 await self.session.save_cookies()  # 네이버가 갱신한 쿠키를 다시 보관
                 return result
             except NaverError as exc:
@@ -283,12 +305,14 @@ class NaverBlog:
                     exc.screenshot = await self._shot(page, "error")
                 raise
             except Exception as exc:
-                raise NaverError(f"임시저장 중 오류: {exc}", await self._shot(page, "error")) from exc
+                what = "발행" if publish else "임시저장"
+                raise NaverError(f"{what} 중 오류: {exc}", await self._shot(page, "error")) from exc
             finally:
                 await page.close()
 
     async def _save(
-        self, page: Page, title: str, body_html: str, images: list[Path], category: Category | None
+        self, page: Page, title: str, body_html: str, images: list[Path], category: Category | None,
+        publish: bool = False, tags: list[str] | None = None,
     ) -> DraftResult:
         url = f"https://blog.naver.com/{self.cfg.naver_blog_id}?Redirect=Write&"
         if category and category.no:
@@ -332,6 +356,11 @@ class NaverBlog:
                 log.warning("이미지 %d 업로드 실패: %s", i, exc)
                 result.warnings.append(f"이미지 {i} 업로드 실패")
         await self._remove_leftover_markers(page, frame)
+
+        if publish:  # 발행: 레이어를 열어 카테고리·태그를 정하고 [발행] 확정
+            await self._publish(page, frame, category, tags or [], result)
+            result.screenshot = await self._shot(page, "published")
+            return result
 
         # 카테고리
         if category:
@@ -410,6 +439,148 @@ class NaverBlog:
             else:
                 await scope.locator(SELECTORS["publish_button"]).first.click()  # 토글로 닫기
             await asyncio.sleep(0.5)
+
+    async def publish_saved(
+        self,
+        title: str,
+        body_html: str,
+        images: list[Path] | None = None,
+        category: Category | None = None,
+        tags: list[str] | None = None,
+    ) -> DraftResult:
+        """임시저장해 둔 글을 발행한다.
+
+        ① 에디터의 임시저장 목록에서 같은 제목의 글을 불러와 그대로 발행 (발행되면 임시저장 목록에서도 빠짐)
+        ② 목록에서 못 찾으면 저장해 둔 내용으로 다시 써서 발행 (이때는 임시저장 목록에 원래 글이 남을 수 있음)
+        """
+        async with self.session.lock():
+            ctx = await self._logged_in_context()
+            page = await ctx.new_page()
+            try:
+                url = f"https://blog.naver.com/{self.cfg.naver_blog_id}?Redirect=Write&"
+                if category and category.no:
+                    url += f"categoryNo={category.no}"
+                await page.goto(url, wait_until="domcontentloaded")
+                if LOGIN_HOST in page.url:
+                    self.session.write_session(loggedIn=False)
+                    raise NotLoggedIn(NOT_LOGGED_IN)
+                frame = await self._editor_frame(page)
+                await self._dismiss_popups(frame)
+                result = DraftResult(title=title, screenshot=None, editor_url=page.url)
+                if await self._load_draft(page, frame, title):
+                    log.info("임시저장 글을 불러와 발행합니다: %s", title)
+                    await self._publish(page, frame, category, tags or [], result)
+                else:
+                    log.info("임시저장 목록에서 글을 못 찾아, 저장해 둔 내용으로 다시 써서 발행합니다: %s", title)
+                    await page.close()
+                    page = await ctx.new_page()
+                    result = await self._save(page, title, body_html, images or [], category, True, tags or [])
+                    result.warnings.append("임시저장 목록에서 원래 글을 못 찾아 다시 써서 발행했습니다 (임시저장 목록에 원래 글이 남아 있을 수 있음)")
+                result.screenshot = await self._shot(page, "published")
+                await self.session.save_cookies()
+                return result
+            except NaverError as exc:
+                if exc.screenshot is None:
+                    exc.screenshot = await self._shot(page, "error")
+                raise
+            except Exception as exc:
+                raise NaverError(f"발행 중 오류: {exc}", await self._shot(page, "error")) from exc
+            finally:
+                await page.close()
+
+    async def _load_draft(self, page: Page, frame: Frame | Page, title: str) -> bool:
+        """[저장] 옆 숫자 버튼 → 임시저장 목록에서 제목이 같은 글을 불러온다."""
+        key = re.sub(r"\s+", " ", title).strip()[:25]
+        for scope in (frame, page):
+            for sel in SELECTORS["draft_list_button"]:
+                btn = scope.locator(sel)
+                try:
+                    if not await btn.count():
+                        continue
+                    await btn.first.click()
+                    await asyncio.sleep(1.2)
+                    for item_sel in SELECTORS["draft_item"]:
+                        item = scope.locator(item_sel).filter(has_text=key)
+                        if await item.count():
+                            await item.first.click()
+                            await asyncio.sleep(1)
+                            confirm = scope.locator(SELECTORS["popup_confirm"])
+                            if await confirm.count() and await confirm.first.is_visible():
+                                await confirm.first.click()  # "불러오시겠습니까?" → 확인
+                            await asyncio.sleep(2)
+                            loaded = await frame.locator(SELECTORS["title"]).first.inner_text()
+                            return key[:10] in re.sub(r"\s+", " ", loaded)
+                    return False
+                except Exception as exc:
+                    log.info("임시저장 목록 열기 실패: %s", exc)
+                    return False
+        return False
+
+    async def _choose_category_in_layer(self, scope: Frame | Page, category: Category) -> bool:
+        select = scope.locator(SELECTORS["category_select"])
+        if not await select.count():
+            return False
+        await select.first.click()
+        await asyncio.sleep(0.8)
+        name_re = re.compile(rf"^\s*{re.escape(category.name)}\s*$")
+        for sel in SELECTORS["category_option"]:
+            option = scope.locator(sel).filter(has_text=name_re)
+            if await option.count():
+                await option.first.click()
+                await asyncio.sleep(0.5)
+                return True
+        return False
+
+    async def _publish(self, page: Page, frame: Frame | Page, category: Category | None, tags: list[str],
+                       result: DraftResult) -> None:
+        """[발행] 레이어: 카테고리 → 태그 → 레이어 안의 [발행] 버튼. 발행된 글 주소를 기록한다."""
+        scope = await self._open_publish_layer(page, frame)
+        if scope is None:
+            raise NaverError("[발행] 버튼을 찾지 못했습니다")
+        if category:
+            try:
+                if await self._choose_category_in_layer(scope, category):
+                    result.category = category.label
+                elif category.no:
+                    result.category = category.label + " (주소로 지정)"
+                else:
+                    result.warnings.append(f"카테고리 '{category.name}' 선택 실패 → 기본 카테고리")
+            except Exception as exc:
+                result.warnings.append(f"카테고리 선택 실패: {exc}")
+        if tags:
+            try:
+                tag_box = scope.locator(SELECTORS["tag_input"]).first
+                if await tag_box.count():
+                    for t in tags[:10]:  # 네이버 태그는 최대 10개
+                        await tag_box.click()
+                        await page.keyboard.insert_text(t.replace(" ", "").lstrip("#"))
+                        await page.keyboard.press("Enter")
+                        await asyncio.sleep(0.2)
+            except Exception as exc:
+                log.info("태그 입력 실패(본문 끝 #태그는 그대로 있음): %s", exc)
+        before = page.url
+        for sel in SELECTORS["publish_confirm"]:
+            btn = scope.locator(sel)
+            try:
+                if await btn.count() and await btn.last.is_visible():
+                    await btn.last.click()
+                    break
+            except Exception:
+                continue
+        else:
+            raise NaverError("[발행] 레이어의 발행 확인 버튼을 찾지 못했습니다")
+        # 발행되면 글 보기 화면으로 넘어간다
+        post_re = re.compile(rf"blog\.naver\.com/(?:{re.escape(self.cfg.naver_blog_id)}/\d+|PostView|.*logNo=\d+)")
+        for _ in range(60):
+            await asyncio.sleep(0.5)
+            urls = [page.url] + [f.url for f in page.frames]
+            hit = next((u for u in urls if post_re.search(u) and u != before), None)
+            if hit:
+                result.published, result.post_url = True, hit
+                return
+        # 주소가 안 바뀌어도 발행됐을 수 있다 (화면 구조에 따라) — 확인 필요로 남긴다
+        result.published = True
+        result.warnings.append("발행 버튼은 눌렀지만 발행된 글 주소를 확인하지 못했습니다. 블로그에서 확인해 주세요")
 
     async def _select_category(self, page: Page, frame: Frame | Page, category: Category) -> bool:
         """[발행] 레이어를 열어 카테고리만 고르고 닫는다. 발행 확인 버튼은 누르지 않는다."""

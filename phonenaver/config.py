@@ -72,6 +72,11 @@ class Config:
     always_ranking: bool = True
     ranking_min: int = 10
     always_research: bool = True
+    # 저장 방식: "draft" = 임시저장만, "schedule" = 임시저장 후 정해진 시각(시작 시각 + 간격 + 랜덤)에 발행
+    publish_mode: str = "draft"
+    publish_at: str = ""  # 발행 시작 시각 "HH:MM" (비우면 다 쓰자마자)
+    publish_interval: int = 60  # 발행 글 사이 간격(분)
+    publish_random: int = 30  # 발행 시각마다 더하는 랜덤 대기(0~N분)
     # 글을 연달아 저장할 때 글 사이에 쉬는 시간(초)
     post_delay_min: int = 30
     post_delay_max: int = 90
@@ -109,6 +114,10 @@ class Config:
             always_ranking=_bool("ALWAYS_RANKING", True),
             ranking_min=_int("RANKING_MIN", 10),
             always_research=_bool("ALWAYS_RESEARCH", True),
+            publish_mode="schedule" if os.getenv("PUBLISH_MODE", "").strip().lower() in ("schedule", "publish") else "draft",
+            publish_at=os.getenv("PUBLISH_AT", "").strip(),
+            publish_interval=_int("PUBLISH_INTERVAL", 60),
+            publish_random=_int("PUBLISH_RANDOM", 30),
             post_delay_min=_int("POST_DELAY_MIN", 30),
             post_delay_max=_int("POST_DELAY_MAX", 90),
             thumbnail_card=_bool("THUMBNAIL_CARD", True),

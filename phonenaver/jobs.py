@@ -99,10 +99,23 @@ class Job:
     needs_login: bool = False
     children: list[str] = field(default_factory=list)  # 유튜브 채널 요청이 만든 영상별 작업
     retries: int = 0  # 유튜브가 잠시 막아서 자동으로 다시 시도한 횟수
+    publish_mode: Optional[str] = None  # "draft" / "publish" / None(설정대로)
+    publish_time: Optional[str] = None  # 메시지·화면에서 정한 발행 시각 "HH:MM"
+    scheduled_at: Optional[float] = None  # 발행 예정 시각
+    published: bool = False
+    post_url: str = ""
+    # 발행 예약: "" | scheduled | publishing | published | failed | canceled
+    publish_state: str = ""
+    publish_error: str = ""
+    body_html: str = ""  # 발행할 때 임시저장 목록에서 못 찾으면 다시 쓰기 위한 본문 (발행 후 비움)
+    category_name: str = ""
+    category_no: Optional[int] = None
+    chat_id: Optional[int] = None  # 휴대폰 요청이면 발행됐을 때 알릴 채팅
 
     def public(self) -> dict:
         data = asdict(self)
         data["photos"] = len(self.photos)
+        data.pop("body_html", None)
         return data
 
 
@@ -139,6 +152,11 @@ class JobRunner:
         self._task: asyncio.Task | None = None
         self._results: dict[str, asyncio.Future] = {}
         self._callbacks: dict[str, Progress] = {}
+        from .schedule import PublishScheduler
+
+        self.scheduler = PublishScheduler(get_cfg)
+        self._publish_tasks: dict[str, asyncio.Task] = {}
+        self.on_published: list[Callable[[Job], Awaitable[None]]] = []  # 발행 소식을 받을 곳 (휴대폰 봇)
         self._load()
 
     # ── 기록 ──
@@ -175,6 +193,91 @@ class JobRunner:
         if self._task is None:
             self._queue = asyncio.Queue()
             self._task = asyncio.create_task(self._worker())
+            self._restore_publishes()
+
+    # ── 발행 예약 ──
+    def _restore_publishes(self) -> None:
+        """프로그램을 다시 켰을 때 남아 있는 발행 예약을 이어서 잡는다 (시각이 지난 것은 간격을 두고 차례로)."""
+        pending = sorted((j for j in self.jobs.values() if j.publish_state in ("scheduled", "publishing")),
+                         key=lambda j: j.scheduled_at or 0)
+        now = time.time()
+        for job in pending:
+            when = job.scheduled_at if job.scheduled_at and job.scheduled_at > now else None
+            self.schedule_publish(job, when)
+
+    def schedule_publish(self, job: Job, when: float | None = None) -> None:
+        from .schedule import fmt
+
+        when = when or self.scheduler.plan(job.publish_time)
+        self.scheduler.last = max(self.scheduler.last, when)
+        self._update(job, publish_state="scheduled", scheduled_at=when, publish_error="",
+                     message=f"임시저장 완료 · ⏰ {fmt(when)} 발행 예정")
+        log.info("⏰ %s 발행 예정: %s", fmt(when), job.title)
+        old = self._publish_tasks.pop(job.id, None)
+        if old:
+            old.cancel()
+        self._publish_tasks[job.id] = asyncio.get_running_loop().create_task(self._publish_later(job.id))
+
+    async def _publish_later(self, job_id: str) -> None:
+        while True:
+            job = self.jobs.get(job_id)
+            if job is None or job.publish_state != "scheduled":
+                return
+            left = (job.scheduled_at or 0) - time.time()
+            if left <= 0:
+                break
+            await asyncio.sleep(min(30, left))
+        await self.publish_now(job_id)
+
+    async def publish_now(self, job_id: str) -> None:
+        from .naver import Category, NaverBlog, NotLoggedIn
+
+        job = self.jobs.get(job_id)
+        if job is None or job.publish_state in ("publishing", "published"):
+            return
+        self._publish_tasks.pop(job_id, None)
+        self._update(job, publish_state="publishing", message="🚀 발행 중...")
+        cfg = self.get_cfg()
+        category = Category(name=job.category_name, no=job.category_no) if job.category_name else None
+        try:
+            result = await NaverBlog(cfg, self.session).publish_saved(
+                job.title, job.body_html, [Path(p) for p in job.images], category, job.tags
+            )
+        except NotLoggedIn as exc:
+            self._update(job, publish_state="failed", needs_login=True, publish_error=str(exc),
+                         message="발행 실패 — 네이버 로그인 필요 (로그인 후 [지금 발행])")
+            log.warning("발행 실패 (로그인 필요): %s", job.title)
+            await self._notify(job)
+            return
+        except Exception as exc:
+            self._update(job, publish_state="failed", publish_error=str(exc),
+                         message="발행 실패 (임시저장 글은 그대로 있어요. [지금 발행] 으로 다시)",
+                         screenshot=str(getattr(exc, "screenshot", "") or job.screenshot))
+            log.error("발행 실패: %s — %s", job.title, exc)
+            await self._notify(job)
+            return
+        self._update(job, publish_state="published", published=True, post_url=result.post_url, body_html="",
+                     warnings=list(dict.fromkeys(job.warnings + result.warnings)),
+                     message="✅ 발행 완료", screenshot=str(result.screenshot or job.screenshot))
+        log.info("✅ 발행 완료: %s %s", job.title, result.post_url)
+        await self._notify(job)
+
+    def cancel_publish(self, job_id: str) -> bool:
+        job = self.jobs.get(job_id)
+        if job is None or job.publish_state not in ("scheduled", "failed"):
+            return False
+        task = self._publish_tasks.pop(job_id, None)
+        if task:
+            task.cancel()
+        self._update(job, publish_state="canceled", message="발행 취소 (임시저장 글은 그대로 있어요)")
+        return True
+
+    async def _notify(self, job: Job) -> None:
+        for listener in list(self.on_published):
+            try:
+                await listener(job)
+            except Exception as exc:
+                log.info("발행 알림 실패: %s", exc)
 
     async def stop(self) -> None:
         if self._task is not None:
@@ -193,12 +296,17 @@ class JobRunner:
         photo_mode: str | None = None,
         progress: Progress | None = None,
         want_result: bool = False,
+        publish_mode: str | None = None,
+        publish_time: str | None = None,
+        chat_id: int | None = None,
     ) -> Job:
-        from .command import DRY_PREFIXES
+        from .command import DRY_PREFIXES, publish_options
 
         dry = any(text.strip().lower().startswith(p) for p in DRY_PREFIXES)
+        said_mode, said_time = publish_options(text)  # "발행해줘", "21시에 발행", "임시저장"
         job = Job(id=uuid.uuid4().hex[:10], text=text, source=source, photos=[str(p) for p in photos or []],
-                  photo_mode=photo_mode, dry_run=dry, message="대기 중")
+                  photo_mode=photo_mode, dry_run=dry, message="대기 중",
+                  publish_mode=publish_mode or said_mode, publish_time=publish_time or said_time, chat_id=chat_id)
         self.jobs[job.id] = job
         if want_result:  # 결과를 기다릴 사람이 있을 때만 (휴대폰 답장용)
             self._results[job.id] = asyncio.get_running_loop().create_future()
@@ -238,6 +346,7 @@ class JobRunner:
                 fut.cancel()
             return True
         if job.status in ("done", "failed", "canceled"):
+            self.cancel_publish(job_id)  # 발행 예약이 걸려 있으면 같이 취소
             del self.jobs[job_id]
             self._save()
             self.events.publish("jobs", self.list())
@@ -365,6 +474,14 @@ class JobRunner:
             screenshot=str(result.draft.screenshot) if result.draft and result.draft.screenshot else "",
         )
         log.info("✅ %s: %s", job.message, result.post.title)
+        # 발행 예약: 기본은 임시저장만. '정해진 시간에 발행' 이 켜져 있거나 메시지로 발행을 요청하면 그 시각에 발행
+        if not result.command.dry_run and result.draft is not None:
+            mode = job.publish_mode or cfg.publish_mode
+            if mode in ("publish", "schedule"):
+                self._update(job, body_html=result.body_html,
+                             category_name=result.category.name if result.category else "",
+                             category_no=result.category.no if result.category else None)
+                self.schedule_publish(job)
         if not result.command.dry_run:  # 유튜브 영상으로 쓴 글은 기록해서 채널 요청 때 다시 안 쓴다
             from .youtube import video_id
 

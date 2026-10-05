@@ -61,6 +61,11 @@ HELP = """📝 네이버 블로그 자동 글쓰기 봇
    · 직접 지정: 카테고리: 여행
    · /categories 내 블로그 카테고리 새로고침
 
+⏰ 발행: 글은 항상 먼저 임시저장합니다. 정해진 시각이 되면 발행하게 할 수 있어요
+   · "21시에 발행", "오후 9시 30분 발행", "바로 발행해줘" → 그 글만 그 시각에 발행 (+랜덤 대기)
+   · "임시저장만" → 발행 안 함
+   · 기본값과 시작 시각·간격·랜덤 대기는 PC 대시보드 4번 칸에서
+
 · 앞에 /test 를 붙이면 저장하지 않고 미리보기만 보냅니다.
 · 말투·분량·대상도 자유롭게 지시하세요. (예: 1500자, 반말, 초보자용)
 · 여러 컴퓨터(블로그)에 한 번에: 컴퓨터마다 봇을 만들어 한 그룹에 넣고 그룹에 보내기
@@ -142,7 +147,7 @@ def build_app(get_cfg, runner: JobRunner) -> Application:
             except Exception:
                 pass
 
-        job = runner.submit(text, photos, source="phone", progress=progress, want_result=True)
+        job = runner.submit(text, photos, source="phone", progress=progress, want_result=True, chat_id=chat)
         try:
             result = await runner.wait(job)
         except NotLoggedIn:
@@ -167,10 +172,19 @@ def build_app(get_cfg, runner: JobRunner) -> Application:
             return
 
         plain = images.strip_markers(html_utils.html_to_text(result.body_html))
-        lines = [f"✅ {'미리보기 (저장 안 함)' if result.command.dry_run else '임시저장 완료'}",
+        done = ("미리보기 (저장 안 함)" if result.command.dry_run else
+                "발행 완료" if result.draft and result.draft.published else "임시저장 완료")
+        lines = [f"✅ {done}",
                  f"제목: {result.post.title}", f"분량: 약 {len(plain):,}자"]
         cat = result.draft.category if result.draft else (result.category.label if result.category else None)
         lines.append(f"카테고리: {cat or '기본 카테고리'}")
+        if result.draft and result.draft.post_url:
+            lines.append(f"주소: {result.draft.post_url}")
+        planned = runner.jobs.get(job.id)
+        if planned and planned.publish_state == "scheduled" and planned.scheduled_at:
+            from .schedule import fmt
+
+            lines.append(f"⏰ 발행 예정: {fmt(planned.scheduled_at)} (발행되면 알려 드려요)")
         if result.photos_received:
             if result.photos_attached:
                 lines.append(f"보낸 사진: {result.photos_received}장 분석, {result.photos_attached}장 첨부")
@@ -197,7 +211,9 @@ def build_app(get_cfg, runner: JobRunner) -> Application:
                 await context.bot.send_message(chat, (tag if i == 0 else "") + plain[i:i + 3500])
         elif result.draft and result.draft.screenshot:
             with open(result.draft.screenshot, "rb") as f:
-                await context.bot.send_photo(chat, f, caption=tag + "네이버 앱 > 글쓰기 > 임시저장 글에서 확인·발행하세요")
+                caption = ("발행된 글 화면" if result.draft.published
+                           else "네이버 앱 > 글쓰기 > 임시저장 글에서 확인·발행하세요")
+                await context.bot.send_photo(chat, f, caption=tag + caption)
 
     async def report_channel(chat, context, status, tag: str, result: ChannelResult) -> None:
         """유튜브 채널 요청: 몇 개를 넣었는지 알리고, 글이 하나 끝날 때마다 짧게 알린다."""
@@ -290,7 +306,20 @@ class TelegramBot:
     def running(self) -> bool:
         return self.app is not None
 
+    async def _notify_published(self, job) -> None:
+        """정해진 시각에 발행됐을 때(또는 실패했을 때) 요청한 채팅으로 알린다."""
+        if self.app is None or not job.chat_id:
+            return
+        tag = f"[{self.get_cfg().naver_blog_id or 'PC'}] "
+        if job.publish_state == "published":
+            text = f"{tag}🚀 발행 완료: {job.title}" + (f"\n{job.post_url}" if job.post_url else "")
+        else:
+            text = f"{tag}❌ 발행 실패: {job.title}\n{job.message}"
+        await self.app.bot.send_message(job.chat_id, text)
+
     async def start(self) -> None:
+        if self._notify_published not in self.runner.on_published:
+            self.runner.on_published.append(self._notify_published)
         if self.app is not None:
             return
         self.error = ""

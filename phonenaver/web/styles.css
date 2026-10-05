@@ -394,3 +394,9 @@ td.src-cell { white-space: nowrap; }
 .job-request pre { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px; max-height: 260px; }
 details.note summary { cursor: pointer; color: var(--text); }
 details.note ol { margin: 8px 0 0 18px; padding: 0; }
+.job-pub { font-size: 12.5px; font-weight: 600; margin-top: 3px; }
+.job-pub.scheduled { color: #92620a; }
+.job-pub.publishing { color: #14607f; }
+.job-pub.published { color: var(--ok); }
+.job-pub.failed { color: var(--danger); }
+.job-pub.canceled { color: var(--muted); }

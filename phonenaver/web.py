@@ -36,6 +36,10 @@ SETTINGS = {
     "MAX_IMAGES": "int",
     "PARAGRAPH_GAP": "int",
     "POST_DELAY_MIN": "int",
+    "PUBLISH_MODE": "str",
+    "PUBLISH_AT": "str",
+    "PUBLISH_INTERVAL": "int",
+    "PUBLISH_RANDOM": "int",
     "MIN_CHARS": "int",
     "ALWAYS_RANKING": "bool",
     "RANKING_MIN": "int",
@@ -77,6 +81,8 @@ class State:
         env.update({
             "IMAGE_COUNT": cfg.image_count, "IMAGE_PER_SECTION": cfg.image_per_section, "MAX_IMAGES": cfg.max_images,
             "PARAGRAPH_GAP": cfg.paragraph_gap, "POST_DELAY_MIN": cfg.post_delay_min,
+            "PUBLISH_MODE": cfg.publish_mode, "PUBLISH_AT": cfg.publish_at,
+            "PUBLISH_INTERVAL": cfg.publish_interval, "PUBLISH_RANDOM": cfg.publish_random,
             "MIN_CHARS": cfg.min_chars, "ALWAYS_RANKING": cfg.always_ranking, "RANKING_MIN": cfg.ranking_min,
             "ALWAYS_RESEARCH": cfg.always_research,
             "POST_DELAY_MAX": cfg.post_delay_max, "THUMBNAIL_CARD": cfg.thumbnail_card, "APPEND_HASHTAGS": cfg.append_hashtags,
@@ -244,6 +250,8 @@ def build(state: State, open_url: str | None = None) -> web.Application:
         form = await request.post()
         text = str(form.get("text", "")).strip()
         mode = str(form.get("photoMode", "analyze"))
+        save_mode = str(form.get("saveMode", "")) or None  # "" 설정대로 / draft / schedule
+        publish_time = str(form.get("publishTime", "")).strip() or None
         dry = str(form.get("dry", "")) in ("1", "true", "on")
         photos: list[Path] = []
         UPLOADS.mkdir(parents=True, exist_ok=True)
@@ -260,7 +268,9 @@ def build(state: State, open_url: str | None = None) -> web.Application:
             text = "보낸 사진 내용을 분석해서 그 내용으로 블로그 글을 써줘"
         if dry and not text.lower().startswith(("/test", "/dry")):
             text = "/test " + text
-        job = state.runner.submit(text, photos, source="pc", photo_mode=mode if photos else None)
+        job = state.runner.submit(text, photos, source="pc", photo_mode=mode if photos else None,
+                                  publish_mode=save_mode if save_mode in ("draft", "schedule") else None,
+                                  publish_time=publish_time if save_mode == "schedule" else None)
         return json_ok(job.public())
 
     @routes.post("/api/jobs/{id}/retry")
@@ -274,6 +284,23 @@ def build(state: State, open_url: str | None = None) -> web.Application:
     async def delete_job(request):
         ok = state.runner.cancel(request.match_info["id"])
         return json_ok() if ok else json_err("진행 중인 작업은 끝날 때까지 기다려 주세요.")
+
+    @routes.post("/api/jobs/{id}/publish")
+    async def publish_now(request):
+        job = state.runner.jobs.get(request.match_info["id"])
+        if job is None or job.status != "done" or job.dry_run:
+            return json_err("임시저장된 글만 발행할 수 있습니다.")
+        if job.publish_state in ("publishing", "published"):
+            return json_err("이미 발행 중이거나 발행된 글입니다.")
+        if not job.body_html and not job.title:
+            return json_err("발행할 내용을 찾지 못했습니다.")
+        background(f"publish-{job.id}", state.runner.publish_now(job.id))
+        return json_ok()
+
+    @routes.post("/api/jobs/{id}/publish/cancel")
+    async def publish_cancel(request):
+        ok = state.runner.cancel_publish(request.match_info["id"])
+        return json_ok() if ok else json_err("취소할 발행 예약이 없습니다.")
 
     @routes.post("/api/jobs/clear")
     async def clear_jobs(_):

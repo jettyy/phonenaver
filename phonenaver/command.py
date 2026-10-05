@@ -63,6 +63,33 @@ RANK_RE = re.compile(r"순위|랭킹|ranking|top\s*\d+|탑\s*\d+|best\s*\d+|베�
 RANK_N_RE = re.compile(r"(?:top|탑|best|베스트)\s*(\d{1,3})|(\d{1,3})\s*위(?:까지)?|(\d{1,3})\s*선(?![가-힣])", re.IGNORECASE)
 RANK_DEFAULT_MIN = 10  # 몇 위까지인지 안 정했을 때 최소
 
+# 저장 방식을 메시지로 정하기: "발행해줘", "임시저장", "21시 30분에 발행", "오후 9시 발행"
+DRAFT_RE = re.compile(r"임시\s*저장")
+PUBLISH_RE = re.compile(r"(?:바로|즉시|지금|예약)?\s*발행(?!\s*(?:하지|은\s*하지|는\s*하지|말|마|없이|안))")
+PUBLISH_TIME_RE = re.compile(
+    r"(오전|오후|아침|저녁|밤)?\s*(\d{1,2})\s*(?:시|:)\s*(?:(\d{1,2})\s*분?|반)?\s*(?:에|쯤)?\s*(?:예약\s*)?발행"
+)
+
+
+def publish_options(text: str) -> tuple[str | None, str | None]:
+    """(저장 방식 'draft'/'publish' 또는 None=설정대로, 발행 시각 'HH:MM' 또는 None)."""
+    m = PUBLISH_TIME_RE.search(text)
+    if m:
+        ampm, hour, minute = m.group(1), int(m.group(2)), m.group(3)
+        mins = 30 if minute is None and "반" in m.group(0) else int(minute or 0)
+        if ampm in ("오후", "저녁", "밤") and hour < 12:
+            hour += 12
+        if ampm in ("오전", "아침") and hour == 12:
+            hour = 0
+        if 0 <= hour <= 23 and 0 <= mins <= 59:
+            return "publish", f"{hour:02d}:{mins:02d}"
+    if DRAFT_RE.search(text) or re.search(r"발행\s*(?:하지|은\s*하지|는\s*하지|말|마|없이|안)", text):
+        return "draft", None
+    if PUBLISH_RE.search(text):
+        return "publish", None
+    return None, None
+
+
 # 유튜브 채널: "최근 3개월", "1년", "10개만"
 CHANNEL_MONTHS_RE = re.compile(r"(\d{1,2})\s*개월")
 CHANNEL_YEARS_RE = re.compile(r"(\d)\s*년(?!도)")

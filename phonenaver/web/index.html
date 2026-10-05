@@ -73,6 +73,18 @@
       </span>
     </div>
     <div class="row">
+      <label class="inline">저장 방식
+        <select id="req-save-mode">
+          <option value="">설정대로 (4번 칸)</option>
+          <option value="draft">임시저장만</option>
+          <option value="schedule">임시저장 후 정해진 시각에 발행</option>
+        </select>
+      </label>
+      <label class="inline hidden" id="req-time-wrap">발행 시각
+        <input id="req-publish-time" type="time">
+      </label>
+    </div>
+    <div class="row" style="margin-top:10px">
       <button class="btn primary" id="btn-submit">글 쓰고 임시저장</button>
       <button class="btn" id="btn-preview">미리보기만 (저장 안 함)</button>
       <button class="btn ghost" id="btn-preset-save">⭐ 이 요청을 버튼으로 저장</button>
@@ -141,6 +153,26 @@
         <label>고정 장수 (위 항목을 껐을 때)
           <input id="s-IMAGE_COUNT" type="number" min="0" max="10">
           <span class="sub">무료 사진 → 카드 이미지 순으로 채웁니다</span>
+        </label>
+        <label>저장 방식 (기본)
+          <select id="s-PUBLISH_MODE">
+            <option value="draft">임시저장만</option>
+            <option value="schedule">임시저장 후 정해진 시각에 발행</option>
+          </select>
+          <span class="sub">글은 항상 먼저 임시저장합니다. '발행' 을 고르면 아래 시각이 되면 그 글을 발행합니다.
+            메시지에 "발행해줘", "21시에 발행", "임시저장만" 이라고 쓰면 그 글만 따로 정할 수 있어요</span>
+        </label>
+        <label>발행 시작 시각
+          <input id="s-PUBLISH_AT" type="time">
+          <span class="sub">비우면 임시저장 직후부터. 이미 지난 시각이면 다음 날 그 시각</span>
+        </label>
+        <label>발행 글 사이 간격 (분)
+          <input id="s-PUBLISH_INTERVAL" type="number" min="0" max="1440">
+          <span class="sub">두 번째 글은 첫 글 발행 뒤 이만큼 지나서 (기본 60분)</span>
+        </label>
+        <label>랜덤 추가 대기 (분, 최대)
+          <input id="s-PUBLISH_RANDOM" type="number" min="0" max="600">
+          <span class="sub">발행 시각마다 0~이만큼 랜덤으로 더해 기계적으로 보이지 않게 (기본 30분)</span>
         </label>
         <label>최소 분량 (공백 제외)
           <input id="s-MIN_CHARS" type="number" min="0" max="10000" step="100">

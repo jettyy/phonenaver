@@ -260,6 +260,7 @@ class Pipeline:
         photos: list[Path] | None = None,
         photo_mode: str | None = None,
     ) -> Result:
+        """글을 쓰고 임시저장한다. (발행은 정해진 시각에 jobs 의 발행 예약이 따로 한다)"""
         cmd = parse(text)
         if photo_mode in ("attach", "analyze"):  # 대시보드에서 버튼으로 고른 경우
             cmd.photo_mode = photo_mode

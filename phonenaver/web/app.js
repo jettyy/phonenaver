@@ -96,7 +96,7 @@ function renderConnect(msg) {
 
 // ── 설정 ─────────────────────────────────
 const BOOLS = ['ALWAYS_RANKING', 'ALWAYS_RESEARCH', 'IMAGE_PER_SECTION', 'THUMBNAIL_CARD', 'AUTO_CATEGORY', 'APPEND_HASHTAGS', 'INCLUDE_SOURCES', 'HEADLESS'];
-const VALUES = ['MIN_CHARS', 'RANKING_MIN', 'IMAGE_COUNT', 'MAX_IMAGES', 'PARAGRAPH_GAP', 'POST_DELAY_MIN', 'POST_DELAY_MAX', 'MAX_SEARCHES'];
+const VALUES = ['PUBLISH_MODE', 'PUBLISH_AT', 'PUBLISH_INTERVAL', 'PUBLISH_RANDOM', 'MIN_CHARS', 'RANKING_MIN', 'IMAGE_COUNT', 'MAX_IMAGES', 'PARAGRAPH_GAP', 'POST_DELAY_MIN', 'POST_DELAY_MAX', 'MAX_SEARCHES'];
 
 function renderSettings(s) {
   if (!s) return;
@@ -166,6 +166,8 @@ async function submit(dry) {
   form.append('text', text);
   form.append('dry', dry ? '1' : '');
   form.append('photoMode', document.querySelector('input[name=photoMode]:checked').value);
+  form.append('saveMode', $('req-save-mode').value);
+  form.append('publishTime', $('req-publish-time').value);
   state.photos.forEach((f) => form.append('photos', f, f.name));
   await act(async () => {
     await api('/api/jobs', { form });
@@ -231,6 +233,8 @@ $('btn-forget').onclick = () => {
 
 // ── 5. 작업 목록 ─────────────────────────
 const STATUS = { queued: '대기', running: '진행 중', done: '완료', failed: '실패', canceled: '취소' };
+const PUBLISH = { scheduled: '⏰ 발행 예정', publishing: '🚀 발행 중', published: '✅ 발행됨', failed: '❌ 발행 실패', canceled: '발행 취소' };
+$('req-save-mode').onchange = () => $('req-time-wrap').classList.toggle('hidden', $('req-save-mode').value !== 'schedule');
 
 function fileUrl(p) { return '/api/file?path=' + encodeURIComponent(p); }
 function hhmm(ts) {
@@ -247,6 +251,10 @@ function jobRow(j) {
   const title = j.title ? `<div class="job-title">${esc(j.title)}</div><div class="job-req" title="${esc(full)}">요청: ${esc(req)}${more}${photos}</div>`
     : `<div class="job-title" title="${esc(full)}">${esc(req) || '(사진만)'}${more}${photos}</div>`;
   const msg = j.status === 'running' || j.status === 'queued' ? `<div class="job-msg">${esc(j.message)}</div>` : '';
+  const pub = j.publish_state ? `<div class="job-pub ${j.publish_state}">${PUBLISH[j.publish_state] || ''}${
+    j.publish_state === 'scheduled' && j.scheduled_at ? ' ' + hhmm(j.scheduled_at) : ''}${
+    j.post_url ? ` · <a class="post-link" href="${esc(j.post_url)}" target="_blank">글 보기</a>` : ''}${
+    j.publish_error ? ` · ${esc(j.publish_error.slice(0, 120))}` : ''}</div>` : '';
   const err = j.error ? `<div class="job-warn">${esc(j.error)}</div>` : '';
   const warn = (j.warnings || []).map((w) => `<div class="job-warn">⚠️ ${esc(w)}</div>`).join('');
   const login = j.needs_login ? '<button class="btn small primary" data-login="1">네이버 로그인</button>' : '';
@@ -254,6 +262,9 @@ function jobRow(j) {
     `<button class="btn small ghost" data-view="${j.id}">${state.open.has(j.id) ? '접기' : '보기'}</button>`,
     j.status === 'failed' || j.status === 'canceled' || j.status === 'done' ? `<button class="btn small" data-retry="${j.id}">다시</button>` : '',
     j.status !== 'running' ? `<button class="btn small ghost danger" data-del="${j.id}">${j.status === 'queued' ? '취소' : '삭제'}</button>` : '',
+    j.status === 'done' && !j.dry_run && ['', 'scheduled', 'failed', 'canceled'].includes(j.publish_state || '')
+      ? `<button class="btn small primary" data-publish="${j.id}">지금 발행</button>` : '',
+    j.publish_state === 'scheduled' ? `<button class="btn small ghost" data-unpublish="${j.id}">발행 취소</button>` : '',
     login,
   ].join(' ');
   const imgs = j.images && j.images.length ? `${j.images.length}장` : '-';
@@ -261,7 +272,7 @@ function jobRow(j) {
     <td class="src">${hhmm(j.created)}</td>
     <td class="src">${j.source === 'phone' ? '📱 휴대폰' : '💻 PC'}${j.dry_run ? '<br>미리보기' : ''}</td>
     <td><span class="status ${j.status}">${STATUS[j.status] || j.status}</span></td>
-    <td class="msg">${title}${msg}${err}${warn}</td>
+    <td class="msg">${title}${msg}${pub}${err}${warn}</td>
     <td class="src">${esc(j.category || '-')}</td>
     <td class="src" title="${esc((j.image_sources || []).join(', '))}">${imgs}</td>
     <td class="src">${j.chars ? j.chars.toLocaleString() : '-'}</td>
@@ -303,6 +314,11 @@ $('job-body').onclick = (e) => {
     act(() => api(`/api/jobs/${t.dataset.retry}/retry`), '다시 넣었습니다');
   } else if (t.dataset.del) {
     act(() => api('/api/jobs/' + t.dataset.del, { method: 'DELETE' }));
+  } else if (t.dataset.publish) {
+    if (!confirm('이 글을 지금 발행할까요?')) return;
+    act(() => api(`/api/jobs/${t.dataset.publish}/publish`), '발행을 시작합니다');
+  } else if (t.dataset.unpublish) {
+    act(() => api(`/api/jobs/${t.dataset.unpublish}/publish/cancel`), '발행 예약을 취소했습니다 (임시저장 글은 그대로)');
   } else if (t.dataset.login) {
     $('btn-login').click();
   }
