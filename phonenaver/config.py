@@ -77,6 +77,9 @@ class Config:
     publish_at: str = ""  # 발행 시작 시각 "HH:MM" (비우면 다 쓰자마자)
     publish_interval: int = 60  # 발행 글 사이 간격(분)
     publish_random: int = 30  # 발행 시각마다 더하는 랜덤 대기(0~N분)
+    # 발행 안 하는 시간대 "HH:MM" ~ "HH:MM" (예: 01:00 ~ 07:00). 이 시간에는 임시저장만 하고 발행은 끝난 뒤로 미룬다
+    no_publish_start: str = ""
+    no_publish_end: str = ""
     # 글을 연달아 저장할 때 글 사이에 쉬는 시간(초)
     post_delay_min: int = 30
     post_delay_max: int = 90
@@ -118,6 +121,8 @@ class Config:
             publish_at=os.getenv("PUBLISH_AT", "").strip(),
             publish_interval=_int("PUBLISH_INTERVAL", 60),
             publish_random=_int("PUBLISH_RANDOM", 30),
+            no_publish_start=os.getenv("NO_PUBLISH_START", "").strip(),
+            no_publish_end=os.getenv("NO_PUBLISH_END", "").strip(),
             post_delay_min=_int("POST_DELAY_MIN", 30),
             post_delay_max=_int("POST_DELAY_MAX", 90),
             thumbnail_card=_bool("THUMBNAIL_CARD", True),

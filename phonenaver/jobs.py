@@ -208,7 +208,8 @@ class JobRunner:
     def schedule_publish(self, job: Job, when: float | None = None) -> None:
         from .schedule import fmt
 
-        when = when or self.scheduler.plan(job.publish_time)
+        # 다시 켰을 때 이어 잡는 예약도 '발행 안 하는 시간대' 를 지키게 한다
+        when = self.scheduler.adjust(when) if when else self.scheduler.plan(job.publish_time)
         self.scheduler.last = max(self.scheduler.last, when)
         self._update(job, publish_state="scheduled", scheduled_at=when, publish_error="",
                      message=f"임시저장 완료 · ⏰ {fmt(when)} 발행 예정")

@@ -25,6 +25,32 @@ def next_clock(hhmm: str, now: float | None = None) -> float:
     return target.timestamp()
 
 
+def _minutes(hhmm: str) -> int:
+    hour, minute = (int(x) for x in hhmm.split(":"))
+    return hour * 60 + minute
+
+
+def quiet_until(ts: float, start: str, end: str) -> float | None:
+    """ts 가 '발행 안 하는 시간대' 안이면 그 시간대가 끝나는 시각, 아니면 None. 자정을 넘는 시간대(23:00~07:00)도 된다."""
+    if not start or not end:
+        return None
+    try:
+        s, e = _minutes(start), _minutes(end)
+    except ValueError:
+        return None
+    if s == e:
+        return None
+    d = datetime.fromtimestamp(ts)
+    m = d.hour * 60 + d.minute
+    inside = (s <= m < e) if s < e else (m >= s or m < e)
+    if not inside:
+        return None
+    end_dt = d.replace(hour=e // 60, minute=e % 60, second=0, microsecond=0)
+    if end_dt <= d:
+        end_dt += timedelta(days=1)
+    return end_dt.timestamp()
+
+
 class PublishScheduler:
     def __init__(self, get_cfg: Callable[[], Config], rand: Callable[[float, float], float] = random.uniform):
         self.get_cfg = get_cfg
@@ -47,8 +73,17 @@ class PublishScheduler:
             if self.last:
                 when = max(when, self.last + max(0, cfg.publish_interval) * 60)
             when += jitter
+        when = self.adjust(when)
         self.last = max(self.last, when)
         return when
+
+    def adjust(self, when: float) -> float:
+        """발행 안 하는 시간대에 걸리면 그 시간대가 끝난 뒤(+랜덤)로 미룬다."""
+        cfg = self.get_cfg()
+        end = quiet_until(when, cfg.no_publish_start, cfg.no_publish_end)
+        if end is None:
+            return when
+        return end + self.rand(0, max(0, cfg.publish_random) * 60)
 
 
 def fmt(ts: float) -> str:

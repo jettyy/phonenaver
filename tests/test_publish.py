@@ -150,3 +150,23 @@ def test_draft_mode_does_not_publish(tmp_path, monkeypatch):
 
     a, b = asyncio.run(scenario())
     assert a.publish_mode is None and b.publish_mode == "publish" and b.publish_time == "21:00"
+
+
+def test_no_publish_hours():
+    from phonenaver.schedule import quiet_until
+
+    day = lambda h, m=0: datetime(2026, 10, 6, h, m).timestamp()
+    # 01:00 ~ 07:00
+    assert quiet_until(day(3), "01:00", "07:00") == day(7)
+    assert quiet_until(day(8), "01:00", "07:00") is None
+    assert quiet_until(day(7), "01:00", "07:00") is None  # 끝나는 시각부터는 발행 가능
+    # 자정을 넘는 23:00 ~ 07:00
+    assert quiet_until(day(23, 30), "23:00", "07:00") == datetime(2026, 10, 7, 7, 0).timestamp()
+    assert quiet_until(day(2), "23:00", "07:00") == day(7)
+    assert quiet_until(day(12), "", "") is None  # 꺼짐
+
+    # 예약이 그 시간대에 걸리면 끝난 뒤로 미룬다 (랜덤 0)
+    cfg = Config(publish_at="", publish_interval=60, publish_random=0, no_publish_start="01:00", no_publish_end="07:00")
+    s = PublishScheduler(lambda: cfg, rand=lambda a, b: 0)
+    times = [datetime.fromtimestamp(s.plan(now=day(23))).strftime("%d %H:%M") for _ in range(4)]
+    assert times == ["06 23:00", "07 00:00", "07 07:00", "07 08:00"]  # 01:00·02:00 자리는 07:00 이후로
