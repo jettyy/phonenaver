@@ -118,6 +118,18 @@ def body_chars(raw_html: str) -> int:
     return len(re.sub(r"\s+", "", text))
 
 
+def copied_sentences(raw_html: str, source_text: str, min_len: int = 25) -> list[str]:
+    """원문에서 그대로 옮겨 온 긴 문장들 (공백 차이는 무시)."""
+    squash = lambda s: re.sub(r"\s+", "", s)
+    body = squash(html_to_text(raw_html))
+    out = []
+    for sent in re.split(r"(?<=[.!?。])\s+|\n+", source_text or ""):
+        key = squash(sent)
+        if len(key) >= min_len and key in body and sent.strip() not in out:
+            out.append(sent.strip())
+    return out
+
+
 def check_post(raw_html: str, rank_need: int | None, min_chars: int = 0) -> list[str]:
     """글 품질 검사. 어긴 것마다 '어떻게 고칠지' 를 돌려준다 (다 지켰으면 빈 목록)."""
     problems = []

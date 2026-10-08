@@ -36,6 +36,8 @@ HELP = """📝 네이버 블로그 자동 글쓰기 봇
    예) https://youtu.be/... 이 영상 내용으로 블로그 글 써줘
    📺 유튜브 채널 링크 → 최근 6개월 영상마다 글 하나씩 (같은 채널을 다시 보내면 다시 씀)
    예) https://www.youtube.com/@채널이름   (최근 3개월 / 10개만 처럼 바꿀 수 있음)
+   📗 네이버 블로그 주소 → 그 블로그 글마다 내용을 소재로 새 글 하나씩 (기본 최근 6개월)
+   예) https://blog.naver.com/아이디   (카테고리 주소도 됨 · 전부 / 1년 / 20개만)
 
 3) 링크를 글에 넣기 → '넣어/삽입/걸어' 라고 말하기
    예) 제주 한달살기 준비물 글 써줘. 이 링크 넣어줘 https://...
@@ -216,13 +218,17 @@ def build_app(get_cfg, runner: JobRunner) -> Application:
                 await context.bot.send_photo(chat, f, caption=tag + caption)
 
     async def report_channel(chat, context, status, tag: str, result: ChannelResult) -> None:
-        """유튜브 채널 요청: 몇 개를 넣었는지 알리고, 글이 하나 끝날 때마다 짧게 알린다."""
+        """유튜브 채널·블로그 요청: 몇 개를 넣었는지 알리고, 글이 하나 끝날 때마다 짧게 알린다."""
         total = len(result.children)
-        head = f"📺 {result.channel}\n최근 {result.months}개월 영상 {result.found}개 → 글 {total}개를 차례로 씁니다"
+        icon, unit = ("📗", "글") if result.kind == "blog" else ("📺", "영상")
+        period = f"최근 {result.months}개월" if result.months else "전체 기간"
+        head = f"{icon} {result.channel}\n{period} {unit} {result.found}개 → 글 {total}개를 차례로 씁니다"
+        if result.note:
+            head += f"\n({result.note})"
         if result.skipped:
-            head += f"\n(이미 쓴 영상 {result.skipped}개는 건너뜀)"
+            head += f"\n(이미 쓴 {unit} {result.skipped}개는 건너뜀)"
         if not total:
-            head += "\n새로 쓸 영상이 없습니다."
+            head += f"\n새로 쓸 {unit}이 없습니다."
         await status.edit_text(head)
         ok = 0
         for i, child in enumerate(result.children, 1):
@@ -237,7 +243,8 @@ def build_app(get_cfg, runner: JobRunner) -> Application:
             except Exception as exc:
                 await context.bot.send_message(chat, f"{tag}❌ ({i}/{total}) 실패: {str(exc)[:200]}")
         if total:
-            await context.bot.send_message(chat, f"{tag}📺 채널 글쓰기 끝: {ok}/{total}개 완료")
+            what = "블로그" if result.kind == "blog" else "채널"
+            await context.bot.send_message(chat, f"{tag}{icon} {what} 글쓰기 끝: {ok}/{total}개 완료")
 
     def buffer_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str = "", photo: Path | None = None) -> None:
         """휴대폰에서 연달아 온 메시지를 모아 하나의 요청으로 처리한다.

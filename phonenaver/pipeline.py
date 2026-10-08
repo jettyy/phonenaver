@@ -150,6 +150,10 @@ class Pipeline:
                 await progress("⚠️ 읽지 못한 링크: " + ", ".join(f"{p.url} ({p.error})" for p in failed))
             warnings += [p.warning for p in pages if p.warning]
             pages = await self._youtube_fallback(pages, progress)
+            # 블로그 글을 소재로 다시 쓰는 요청인데 원글을 못 읽었으면 추측해서 쓰지 않는다
+            unread = [p for p in pages if p.kind == "naver_blog" and not p.ok and p.url not in cmd.insert_urls]
+            if unread:
+                raise RuntimeError(f"블로그 글을 읽지 못해 글을 쓰지 않았습니다 — {unread[0].url} ({unread[0].error})")
             for p in pages:
                 if p.ok and p.kind == "youtube":
                     await progress(f"🎬 '{p.title[:40]}' 대사 {len(p.text):,}자 읽음 — 분석해서 글 작성")
@@ -194,8 +198,16 @@ class Pipeline:
         post = await asyncio.to_thread(self._writer().write, *write_args, **quality)
 
         # 품질 검사: 표·순위표(1위부터 끝까지)·최소 분량. 어기면 고칠 점을 짚어 최대 2번 다시 쓰게 한다
+        blog_sources = "\n".join(p.text for p in pages if p.ok and p.kind == "naver_blog")
+
         def problems_of(p) -> list[str]:
-            return html_utils.check_post(html_utils.sanitize(p.body_html), rank_need, self.cfg.min_chars)
+            body_ = html_utils.sanitize(p.body_html)
+            out = html_utils.check_post(body_, rank_need, self.cfg.min_chars)
+            copied = html_utils.copied_sentences(body_, blog_sources) if blog_sources else []
+            if len(copied) >= 2:
+                sample = " / ".join(c[:40] for c in copied[:3])
+                out.append(f"원글 문장을 그대로 옮긴 곳이 {len(copied)}군데 있습니다 (예: {sample}). 이 문장들을 새로 쓰세요.")
+            return out
 
         def score(p) -> tuple[int, int, int]:
             body_ = html_utils.sanitize(p.body_html)
@@ -205,7 +217,7 @@ class Pipeline:
         for attempt in range(2):
             if not problems:
                 break
-            await progress(f"✍️ 순위표·분량을 보완해서 다시 쓰는 중... ({attempt + 1}/2)")
+            await progress(f"✍️ 순위표·분량·문장을 보완해서 다시 쓰는 중... ({attempt + 1}/2)")
             retry = await asyncio.to_thread(
                 self._writer().write, *write_args, fix_note="\n".join(f"- {x}" for x in problems), **quality
             )

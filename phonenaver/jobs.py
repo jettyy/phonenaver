@@ -121,12 +121,14 @@ class Job:
 
 @dataclass
 class ChannelResult:
-    """유튜브 채널 요청의 결과: 영상마다 글쓰기 작업을 대기열에 넣었다."""
+    """유튜브 채널·네이버 블로그 요청의 결과: 영상·글마다 글쓰기 작업을 대기열에 넣었다."""
     channel: str
-    months: int
+    months: int | None  # None = 기간 제한 없이 전부
     found: int
     skipped: int
     children: list[Job]
+    kind: str = "youtube"  # "youtube" | "blog"
+    note: str = ""
 
 
 def load_done_videos() -> set[str]:
@@ -394,9 +396,12 @@ class JobRunner:
         callback = self._callbacks.pop(job.id, None)
 
         from .command import parse
+        from .naverblog import is_blog_list
         from .youtube import is_channel
 
-        if any(is_channel(u) for u in parse(job.text).urls):
+        cmd0 = parse(job.text)
+        # '이 링크 넣어줘' 로 보낸 주소는 목록으로 펼치지 않고 본문에 넣는다
+        if any((is_channel(u) or is_blog_list(u)) and u not in cmd0.insert_urls for u in cmd0.urls):
             await self._expand_channel(job, callback)
             return
 
@@ -499,14 +504,22 @@ class JobRunner:
             self._queue.put_nowait(job_id)
 
     async def _expand_channel(self, job: Job, callback: Progress | None) -> None:
-        """유튜브 채널 요청 → 최근 영상마다 글쓰기 작업 하나씩 대기열에 넣는다."""
-        from .command import DRY_PREFIXES, channel_options, parse
+        """유튜브 채널 / 네이버 블로그 주소 → 영상·글마다 글쓰기 작업 하나씩 대기열에 넣는다."""
+        from .command import CHANNEL_DEFAULT_MONTHS, channel_options, parse, wants_all
+        from .naverblog import is_blog_list, list_blog_posts
         from .youtube import is_channel, list_channel_videos
 
         fut = self._results.get(job.id)  # 결과는 기다리는 쪽이 가져갈 때까지 둔다
         cmd = parse(job.text)
         months, limit, rest = channel_options(cmd.instruction)
-        extra = rest if len(rest) >= 6 else "이 영상 내용으로 블로그 글 써줘"  # '글로 써줘' 같은 짧은 말은 기본 지시로
+        blog_urls = [u for u in cmd.urls if is_blog_list(u) and u not in cmd.insert_urls]
+        kind = "blog" if blog_urls else "youtube"
+        if kind == "blog" and wants_all(cmd.instruction):
+            months = None  # '전부/전체' + 기간을 따로 안 정했으면 블로그 글 전부
+        short = len(rest) < 6  # '글로 써줘' 같은 짧은 말은 기본 지시로
+        extra_blog = "이 글 내용으로 블로그 글 새로 써줘" if short else rest
+        extra = "이 영상 내용으로 블로그 글 써줘" if short else rest
+        period = f"최근 {months}개월" if months else "전체 기간"
         prefix = "/test " if job.dry_run else ""
 
         async def say(msg: str) -> None:
@@ -521,10 +534,21 @@ class JobRunner:
         children: list[Job] = []
         found = skipped = 0
         names = []
+        notes = []
         try:
-            for url in [u for u in cmd.urls if is_channel(u)]:
-                await say(f"📺 채널 영상 목록 확인 중 (최근 {months}개월{f', 최대 {limit}개' if limit else ''})...")
-                name, videos = await asyncio.to_thread(list_channel_videos, url, months, limit)
+            for url in blog_urls:
+                await say(f"📗 블로그 글 목록 확인 중 ({period}{f', 최대 {limit}개' if limit else ''})...")
+                name, posts, note = await asyncio.to_thread(list_blog_posts, url, months, limit)
+                names.append(name or url)
+                notes += [note] if note else []
+                found += len(posts)
+                for p in posts:
+                    children.append(self.submit(f"{prefix}{p.url}\n{extra_blog}", source=job.source,
+                                                want_result=fut is not None))
+            for url in [u for u in cmd.urls if is_channel(u) and u not in cmd.insert_urls]:
+                yt_months = months or CHANNEL_DEFAULT_MONTHS
+                await say(f"📺 채널 영상 목록 확인 중 (최근 {yt_months}개월{f', 최대 {limit}개' if limit else ''})...")
+                name, videos = await asyncio.to_thread(list_channel_videos, url, yt_months, limit)
                 names.append(name or url)
                 found += len(videos)
                 for v in videos:
@@ -532,18 +556,22 @@ class JobRunner:
                     children.append(self.submit(f"{prefix}{v.url}\n{extra}", source=job.source,
                                                 want_result=fut is not None))
         except Exception as exc:
-            self._update(job, status="failed", message="채널 영상 목록을 가져오지 못함", error=str(exc), finished=time.time())
-            log.error("채널 영상 목록 실패: %s", exc)
+            what = "블로그 글 목록" if kind == "blog" else "채널 영상 목록"
+            self._update(job, status="failed", message=f"{what}을 가져오지 못함", error=str(exc), finished=time.time())
+            log.error("%s 실패: %s", what, exc)
             if fut and not fut.done():
                 fut.set_exception(exc)
             return
 
         channel = ", ".join(names)
-        summary = f"📺 {channel}: 최근 {months}개월 영상 {found}개 → 글 {len(children)}개 대기열에 추가"
+        icon, unit = ("📗", "글") if kind == "blog" else ("📺", "영상")
+        summary = f"{icon} {channel}: {period} {unit} {found}개 → 글 {len(children)}개 대기열에 추가"
         if skipped:
             summary += f" (이미 쓴 {skipped}개 건너뜀)"
-        self._update(job, status="done", message=summary, title=f"📺 {channel} 최근 {months}개월",
+        if notes:
+            summary += f" ({notes[0]})"
+        self._update(job, status="done", message=summary, title=f"{icon} {channel} {period}",
                      children=[c.id for c in children], finished=time.time())
         log.info(summary)
         if fut and not fut.done():
-            fut.set_result(ChannelResult(channel, months, found, skipped, children))
+            fut.set_result(ChannelResult(channel, months, found, skipped, children, kind, "; ".join(notes)))

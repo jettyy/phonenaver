@@ -24,7 +24,7 @@ class Page:
     text: str = ""
     error: str = ""
     truncated: bool = False
-    kind: str = "web"  # "web" | "youtube"
+    kind: str = "web"  # "web" | "youtube" | "naver_blog"
     warning: str = ""
     video: object = None  # 유튜브: 대사를 못 가져왔을 때 영상 정보 (브라우저로 다시 시도할 때 씀)
 
@@ -117,6 +117,8 @@ def fetch(url: str, timeout: float = 20.0) -> Page:
         return fetch_youtube(url)
     page = Page(url=url)
     target = normalize_url(url)
+    if urlparse(target).netloc.lower() == "m.blog.naver.com":
+        page.kind = "naver_blog"
     try:
         with httpx.Client(
             follow_redirects=True,
@@ -135,6 +137,8 @@ def fetch(url: str, timeout: float = 20.0) -> Page:
         return page
 
     page.final_url = final
+    if urlparse(final).netloc.lower() == "m.blog.naver.com":
+        page.kind = "naver_blog"
     ctype = resp.headers.get("content-type", "")
     if "html" not in ctype and "text" not in ctype:
         page.error = f"HTML 페이지가 아님 ({ctype or '알 수 없음'})"

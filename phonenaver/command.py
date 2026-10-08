@@ -111,8 +111,16 @@ def channel_options(text: str) -> tuple[int, int | None, str]:
     rest = text
     for rx in (CHANNEL_MONTHS_RE, CHANNEL_YEARS_RE, CHANNEL_LIMIT_RE):
         rest = rx.sub(" ", rest)
-    rest = re.sub(r"(최근|채널|영상들?|의|치|을|를|전부|모두|하나씩|각각)\s*", " ", rest)
+    rest = re.sub(r"(최근|채널|영상들?|의|치|을|를|전부|전체|모두|모든|하나씩|각각|블로그에?|글들)\s*", " ", rest)
     return months, limit, clean_text(rest)
+
+
+ALL_RE = re.compile(r"전부|전체|모든\s*글|글\s*모두|다\s*써")
+
+
+def wants_all(text: str) -> bool:
+    """블로그 글을 기간 제한 없이 전부 쓰라는 말인지 ('최근 3개월' 처럼 기간을 정했으면 그 기간)."""
+    return bool(ALL_RE.search(text)) and not (CHANNEL_MONTHS_RE.search(text) or CHANNEL_YEARS_RE.search(text))
 
 
 def rank_target(text: str) -> int | None:
