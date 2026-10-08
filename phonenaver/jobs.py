@@ -123,7 +123,7 @@ class Job:
 class ChannelResult:
     """유튜브 채널·네이버 블로그 요청의 결과: 영상·글마다 글쓰기 작업을 대기열에 넣었다."""
     channel: str
-    months: int | None  # None = 기간 제한 없이 전부
+    months: float | None  # None = 기간 제한 없이 전부 (2주처럼 한 달보다 짧으면 소수)
     found: int
     skipped: int
     children: list[Job]
@@ -505,7 +505,7 @@ class JobRunner:
 
     async def _expand_channel(self, job: Job, callback: Progress | None) -> None:
         """유튜브 채널 / 네이버 블로그 주소 → 영상·글마다 글쓰기 작업 하나씩 대기열에 넣는다."""
-        from .command import CHANNEL_DEFAULT_MONTHS, channel_options, parse, wants_all
+        from .command import CHANNEL_DEFAULT_MONTHS, channel_options, parse, period_label, wants_all
         from .naverblog import is_blog_list, list_blog_posts
         from .youtube import is_channel, list_channel_videos
 
@@ -519,7 +519,7 @@ class JobRunner:
         short = len(rest) < 6  # '글로 써줘' 같은 짧은 말은 기본 지시로
         extra_blog = "이 글 내용으로 블로그 글 새로 써줘" if short else rest
         extra = "이 영상 내용으로 블로그 글 써줘" if short else rest
-        period = f"최근 {months}개월" if months else "전체 기간"
+        period = period_label(months)
         prefix = "/test " if job.dry_run else ""
 
         async def say(msg: str) -> None:
@@ -547,7 +547,7 @@ class JobRunner:
                                                 want_result=fut is not None))
             for url in [u for u in cmd.urls if is_channel(u) and u not in cmd.insert_urls]:
                 yt_months = months or CHANNEL_DEFAULT_MONTHS
-                await say(f"📺 채널 영상 목록 확인 중 (최근 {yt_months}개월{f', 최대 {limit}개' if limit else ''})...")
+                await say(f"📺 채널 영상 목록 확인 중 ({period_label(yt_months)}{f', 최대 {limit}개' if limit else ''})...")
                 name, videos = await asyncio.to_thread(list_channel_videos, url, yt_months, limit)
                 names.append(name or url)
                 found += len(videos)

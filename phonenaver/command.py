@@ -10,7 +10,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-URL_RE = re.compile(r"https?://[^\s<>\"'\]\)）」』]+")
+URL_RE = re.compile(
+    r"(?:https?://|(?<![\w./@-])(?=(?:m\.|www\.)?(?:blog\.naver\.com|youtube\.com|youtu\.be|naver\.me)/))"
+    r"[^\s<>\"'\]\)）」』]+"
+)
 # 링크를 '본문에 넣어 달라'는 뜻으로 보는 표현
 INSERT_WORDS = ("넣어", "넣고", "삽입", "첨부", "걸어", "걸고", "달아", "포함", "링크추가", "링크 추가")
 # 링크가 있어도 최신 정보를 추가로 검색하라는 표현
@@ -90,28 +93,58 @@ def publish_options(text: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-# 유튜브 채널: "최근 3개월", "1년", "10개만"
-CHANNEL_MONTHS_RE = re.compile(r"(\d{1,2})\s*개월")
-CHANNEL_YEARS_RE = re.compile(r"(\d)\s*년(?!도)")
-CHANNEL_LIMIT_RE = re.compile(r"(\d{1,3})\s*개(?!월)(?:만|까지)?")
+# 유튜브 채널·블로그 기간: "최근 3개월", "1년", "2주", "10일", "한 달", "반년", "10개만"
+CHANNEL_MONTHS_RE = re.compile(r"(?<!\d)(\d{1,2})\s*(?:개월|달)")
+CHANNEL_YEARS_RE = re.compile(r"(?<!\d)(\d)\s*년(?!도)")
+CHANNEL_WEEKS_RE = re.compile(r"(?<!\d)(\d{1,2})\s*주(?:일)?(?:간|치|동안)?")
+CHANNEL_DAYS_RE = re.compile(r"(?<!\d)(\d{1,3})\s*일(?:간|치|동안)?(?!\s*(?:\d|전|째|차))")
+WORD_PERIODS = {"일주일": 7 / 30.44, r"한\s*주": 7 / 30.44, "보름": 15 / 30.44, r"한\s*달": 1, r"두\s*달": 2,
+                r"세\s*달": 3, "반년": 6, r"일\s*년": 12}
+WORD_PERIOD_RE = re.compile("|".join(f"(?:{w})" for w in WORD_PERIODS))
+CHANNEL_LIMIT_RE = re.compile(r"(?<!\d)(\d{1,3})\s*개(?!월)(?:만|까지)?")
 CHANNEL_DEFAULT_MONTHS = 6
+DAYS_PER_MONTH = 30.44
 
 
-def channel_options(text: str) -> tuple[int, int | None, str]:
-    """(몇 개월, 최대 몇 개, 기간·개수 표현을 뺀 나머지 지시)."""
-    months = CHANNEL_DEFAULT_MONTHS
-    m = CHANNEL_MONTHS_RE.search(text)
-    y = CHANNEL_YEARS_RE.search(text)
+def _period(text: str) -> float | None:
+    """메시지에 적힌 기간(개월 단위, 2주면 약 0.46). 없으면 None."""
+    found = []
+    for rx, unit in ((CHANNEL_MONTHS_RE, 1), (CHANNEL_YEARS_RE, 12),
+                     (CHANNEL_WEEKS_RE, 7 / DAYS_PER_MONTH), (CHANNEL_DAYS_RE, 1 / DAYS_PER_MONTH)):
+        m = rx.search(text)
+        if m and int(m.group(1)) > 0:
+            found.append((m.start(), int(m.group(1)) * unit))
+    m = WORD_PERIOD_RE.search(text)
     if m:
-        months = max(1, int(m.group(1)))
-    elif y:
-        months = max(1, int(y.group(1))) * 12
+        for w, v in WORD_PERIODS.items():
+            if re.fullmatch(w, m.group(0)):
+                found.append((m.start(), v))
+                break
+    return min(found)[1] if found else None  # 여러 개면 먼저 적은 것
+
+
+def period_label(months: float | None) -> str:
+    if not months:
+        return "전체 기간"
+    days = round(months * DAYS_PER_MONTH)
+    if days < 28:
+        return f"최근 {days // 7}주" if days % 7 == 0 else f"최근 {days}일"
+    if float(months).is_integer():
+        return f"최근 {int(months) // 12}년" if months % 12 == 0 else f"최근 {int(months)}개월"
+    return f"최근 {days}일"
+
+
+def channel_options(text: str) -> tuple[float, int | None, str]:
+    """(몇 개월 - 2주처럼 한 달보다 짧으면 소수, 최대 몇 개, 기간·개수 표현을 뺀 나머지 지시)."""
+    months = _period(text) or CHANNEL_DEFAULT_MONTHS
+    if float(months).is_integer():
+        months = int(months)
     n = CHANNEL_LIMIT_RE.search(text)
     limit = int(n.group(1)) if n else None
     rest = text
-    for rx in (CHANNEL_MONTHS_RE, CHANNEL_YEARS_RE, CHANNEL_LIMIT_RE):
+    for rx in (CHANNEL_MONTHS_RE, CHANNEL_YEARS_RE, CHANNEL_WEEKS_RE, CHANNEL_DAYS_RE, WORD_PERIOD_RE, CHANNEL_LIMIT_RE):
         rest = rx.sub(" ", rest)
-    rest = re.sub(r"(최근|채널|영상들?|의|치|을|를|전부|전체|모두|모든|하나씩|각각|블로그에?|글들)\s*", " ", rest)
+    rest = re.sub(r"(최근|채널|영상들?|의|치|간|동안|을|를|전부|전체|모두|모든|하나씩|각각|블로그에?|글들)\s*", " ", rest)
     return months, limit, clean_text(rest)
 
 
@@ -120,7 +153,7 @@ ALL_RE = re.compile(r"전부|전체|모든\s*글|글\s*모두|다\s*써")
 
 def wants_all(text: str) -> bool:
     """블로그 글을 기간 제한 없이 전부 쓰라는 말인지 ('최근 3개월' 처럼 기간을 정했으면 그 기간)."""
-    return bool(ALL_RE.search(text)) and not (CHANNEL_MONTHS_RE.search(text) or CHANNEL_YEARS_RE.search(text))
+    return bool(ALL_RE.search(text)) and _period(text) is None
 
 
 def rank_target(text: str) -> int | None:
@@ -140,7 +173,8 @@ def clean_text(text: str) -> str:
 
 
 def _clean_url(url: str) -> str:
-    return url.rstrip(".,;:!?…~")
+    url = url.rstrip(".,;:!?…~")
+    return url if re.match(r"https?://", url) else "https://" + url  # 'm.blog.naver.com/아이디' 처럼 보낸 주소
 
 
 def _has_any(text: str, words: tuple[str, ...]) -> bool:

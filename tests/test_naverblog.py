@@ -164,3 +164,38 @@ def test_unread_blog_post_stops(monkeypatch):
     pipe = pipeline.Pipeline(Config())
     with pytest.raises(RuntimeError, match="블로그 글을 읽지 못해"):
         asyncio.run(pipe.generate(parse("https://blog.naver.com/abc/223000\n이 글 내용으로 써줘")))
+
+
+@pytest.mark.parametrize("text, months, label", [
+    ("https://m.blog.naver.com/dbgurwnzz", 6, "최근 6개월"),
+    ("https://m.blog.naver.com/dbgurwnzz 최근 3개월", 3, "최근 3개월"),
+    ("https://m.blog.naver.com/dbgurwnzz 1년치 써줘", 12, "최근 1년"),
+    ("https://m.blog.naver.com/dbgurwnzz 2주", 14 / 30.44, "최근 2주"),
+    ("https://m.blog.naver.com/dbgurwnzz 10일 동안 쓴 글", 10 / 30.44, "최근 10일"),
+    ("https://m.blog.naver.com/dbgurwnzz 한 달", 1, "최근 1개월"),
+    ("https://m.blog.naver.com/dbgurwnzz 일주일치", 7 / 30.44, "최근 1주"),
+    ("https://m.blog.naver.com/dbgurwnzz 2026년 정책 글들 써줘", 6, "최근 6개월"),  # '2026년' 은 기간이 아님
+])
+def test_period(text, months, label):
+    from phonenaver.command import channel_options, period_label
+
+    got, _, _ = channel_options(parse(text).instruction)
+    assert got == pytest.approx(months) and period_label(got) == label
+
+
+@pytest.mark.parametrize("text, url", [
+    ("m.blog.naver.com/dbgurwnzz 최근 3개월", "https://m.blog.naver.com/dbgurwnzz"),
+    ("blog.naver.com/dbgurwnzz/223456789012 이 글로 써줘", "https://blog.naver.com/dbgurwnzz/223456789012"),
+    ("https://m.blog.naver.com/dbgurwnzz", "https://m.blog.naver.com/dbgurwnzz"),
+    ("youtu.be/AbCdEfGhIjK", "https://youtu.be/AbCdEfGhIjK"),
+])
+def test_url_without_scheme(text, url):
+    assert parse(text).urls == [url]
+
+
+def test_main_vs_detail_address():
+    from phonenaver.naverblog import is_blog_list
+
+    assert is_blog_list("https://m.blog.naver.com/dbgurwnzz")  # 메인 → 기간 안의 글 전부
+    assert not is_blog_list("https://m.blog.naver.com/dbgurwnzz/223456789012")  # 세부 → 그 글만
+    assert not is_blog_list("https://m.blog.naver.com/PostView.naver?blogId=dbgurwnzz&logNo=223456789012")

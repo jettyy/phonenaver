@@ -489,7 +489,7 @@ def list_channel_videos(url: str, months: int = 6, limit: int | None = None) -> 
     videos = [ChannelVideo(e["id"], e.get("title") or "", e.get("timestamp")) for e in entries]
     if videos and not any(v.timestamp for v in videos):
         # 목록에 날짜가 안 나오면 영상마다 올린 날짜를 직접 확인 (RSS 는 최근 15개뿐이라 6개월치가 안 됨)
-        log.info("영상 날짜를 하나씩 확인합니다 (최근 %d개월치)", months)
+        log.info("영상 날짜를 하나씩 확인합니다 (최근 %.1f개월치)", months)
         for v in videos:
             v.timestamp = _upload_time(v.id)
             if v.timestamp and v.timestamp < cutoff:
